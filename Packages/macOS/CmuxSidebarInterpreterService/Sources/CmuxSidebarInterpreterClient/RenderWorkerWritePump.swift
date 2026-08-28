@@ -49,11 +49,7 @@ final class RenderWorkerWritePump: @unchecked Sendable {
         writeTimeout: Duration = .seconds(3)
     ) {
         self.channel = channel
-        let components = writeTimeout.components
-        self.writeTimeout = max(
-            0.001,
-            Double(components.seconds) + Double(components.attoseconds) / 1e18
-        )
+        self.writeTimeout = RenderWorkerDeadline.timeInterval(writeTimeout)
         writerQueue = DispatchQueue(
             label: "com.cmuxterm.sidebar-render-writer.\(generation)",
             qos: .userInitiated
@@ -78,7 +74,8 @@ final class RenderWorkerWritePump: @unchecked Sendable {
             guard !cancelled, !failed else { return }
 
             let outbound = coalescedOutboundLocked(outbound)
-            guard retainedMessageCount < Self.maximumRetainedMessageCount,
+            guard outbound.data.count <= Self.maximumRetainedBytes,
+                  retainedMessageCount < Self.maximumRetainedMessageCount,
                   retainedByteCount <= Self.maximumRetainedBytes - outbound.data.count else {
                 failed = true
                 pending.removeAll(keepingCapacity: false)

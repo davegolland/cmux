@@ -17,8 +17,13 @@ import SwiftSyntax
 public struct ParsedProgram: Sendable {
     /// The folded syntax tree the interpreter walks.
     let file: SourceFileSyntax
+    /// False when parsing was refused by the source-size guard. Keeping the
+    /// marker in the value type lets the public parse API fail closed without
+    /// changing it to a throwing API.
+    let isValid: Bool
 
-    init(file: SourceFileSyntax) {
+    init(file: SourceFileSyntax, isValid: Bool = true) {
         self.file = file
+        self.isValid = isValid
     }
 }

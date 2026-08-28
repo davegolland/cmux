@@ -58,9 +58,19 @@ struct TranscriptBatchAssembler {
         provenance: ChatArtifactProvenance = .referenced,
         seq: Int
     ) {
-        artifactReferences.append(contentsOf: paths.map {
-            ChatArtifactTranscriptReference(path: $0, provenance: provenance, seq: seq)
-        })
+        guard artifactReferences.count < ChatArtifactSecurityLimits.maxReferencesPerBatch else {
+            return
+        }
+        let remaining = ChatArtifactSecurityLimits.maxReferencesPerBatch - artifactReferences.count
+        for path in paths.prefix(remaining) {
+            guard path.utf8.count <= ChatArtifactSecurityLimits.maxPathBytes,
+                  !path.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
+                continue
+            }
+            artifactReferences.append(
+                ChatArtifactTranscriptReference(path: path, provenance: provenance, seq: seq)
+            )
+        }
     }
 
     /// Pairs a tool result with its pending invocation, if registered.

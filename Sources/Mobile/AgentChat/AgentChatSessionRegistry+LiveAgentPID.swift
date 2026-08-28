@@ -69,7 +69,7 @@ extension AgentChatSessionRegistry {
         var unidentifiedFallbackPID: (pid: Int, depth: Int)?
         var sawMismatchedSessionIdentity = false
         let expandedPIDs = snapshot.expandedPIDs(rootPIDs: rootPIDs)
-        for pid in expandedPIDs.sorted() {
+        for pid in expandedPIDs where AgentChatPIDValidation.isValid(pid) {
             let depth = processTreeDepth(pid: pid, rootPIDs: rootPIDs, snapshot: snapshot)
             var details: CmuxTopProcessArguments?
             func loadDetails() -> CmuxTopProcessArguments? {
@@ -149,6 +149,7 @@ extension AgentChatSessionRegistry {
         snapshot: CmuxTopProcessSnapshot
     ) -> Set<Int> {
         let pids = snapshot.pids(forCMUXSurfaceID: surfaceID)
+            .filter(AgentChatPIDValidation.isValid)
         return Set(pids.filter { pid in
             guard let parentPID = snapshot.process(pid: pid)?.parentPID else {
                 return true
@@ -162,14 +163,14 @@ extension AgentChatSessionRegistry {
         rootPIDs: Set<Int>,
         snapshot: CmuxTopProcessSnapshot
     ) -> Int {
-        guard pid > 0 else { return 0 }
+        guard AgentChatPIDValidation.isValid(pid) else { return 0 }
         var currentPID = pid
         var depth = 0
         var visited: Set<Int> = []
         while !rootPIDs.contains(currentPID) {
             guard visited.insert(currentPID).inserted,
                   let parentPID = snapshot.process(pid: currentPID)?.parentPID,
-                  parentPID > 0 else {
+                  AgentChatPIDValidation.isValid(parentPID) else {
                 break
             }
             currentPID = parentPID

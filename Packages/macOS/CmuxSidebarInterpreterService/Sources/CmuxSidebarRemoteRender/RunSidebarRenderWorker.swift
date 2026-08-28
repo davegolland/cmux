@@ -14,7 +14,11 @@ public func runSidebarRenderWorker() -> Never {
     guard let channel = try? LengthPrefixedMessageChannel(readFD: 0, writeFD: 1) else {
         exit(1)
     }
-    let (messages, continuation) = AsyncStream.makeStream(of: RenderWorkerInbound.self)
+    // The host write pump already coalesces snapshots, but keep the worker's
+    // decoded-message mailbox bounded if a peer floods valid pointer events.
+    let (messages, continuation) = AsyncStream<RenderWorkerInbound>.makeStream(
+        bufferingPolicy: .bufferingOldest(64)
+    )
 
     // Reader thread: blocking framed reads off stdin (same justified pattern
     // as the clients' reader threads — the fd is the only wake-up source).
@@ -22,10 +26,18 @@ public func runSidebarRenderWorker() -> Never {
     // consumer below applies them in that order.
     let reader = Thread {
         let decoder = JSONDecoder()
+        var invalidFrameCount = 0
         while let data = channel.receiveMessage() {
-            guard let message = try? decoder.decode(RenderWorkerInbound.self, from: data) else {
+            guard JSONFrameGuard.isBounded(data),
+                  let message = try? decoder.decode(RenderWorkerInbound.self, from: data),
+                  message.isWithinSecurityLimits() else {
+                invalidFrameCount += 1
+                if invalidFrameCount >= JSONFrameGuard.maximumConsecutiveInvalidFrames {
+                    break
+                }
                 continue
             }
+            invalidFrameCount = 0
             continuation.yield(message)
         }
         continuation.finish()

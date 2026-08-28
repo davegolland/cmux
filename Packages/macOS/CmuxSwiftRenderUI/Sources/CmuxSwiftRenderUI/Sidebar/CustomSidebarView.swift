@@ -31,8 +31,8 @@ public struct CustomSidebarView: View {
     ///     scrolled, instead of underlapping it. Defaults to
     ///     ``CustomSidebarContentInsets/zero``.
     ///   - interpreter: The interpreter the `.swift` source renders through.
-    ///     Defaults to the in-process implementation; the app injects an
-    ///     out-of-process, crash-isolating ``SidebarInterpreting`` so an
+    ///     The package default is in-process for API compatibility; the app
+    ///     injects an out-of-process, crash-isolating ``SidebarInterpreting`` so an
     ///     interpreter fault from an untrusted sidebar can't crash the host.
     public init(
         fileURL: URL,

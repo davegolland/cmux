@@ -123,4 +123,11 @@ private final class ResultBox: @unchecked Sendable {
     @Test func probeCommandReturnsNilForMissingSocket() {
         #expect(transport.probeCommand("ping", at: UnixSocketFixture.makeTempSocketPath(), timeout: 0.2) == nil)
     }
+
+    @Test func probeCommandRejectsFramingControlsAndEmbeddedNulPath() {
+        let path = UnixSocketFixture.makeTempSocketPath()
+        #expect(transport.probeCommand("ping\nsecond", at: path, timeout: 0.2) == nil)
+        #expect(transport.probeCommand("ping\rsecond", at: path, timeout: 0.2) == nil)
+        #expect(transport.probeCommand("ping", at: path + "\0forged", timeout: 0.2) == nil)
+    }
 }

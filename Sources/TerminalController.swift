@@ -26,6 +26,15 @@ import CmuxWorkspaces
 import CmuxNotifications
 import CmuxSimulator
 
+/// Maximum UTF-8 bytes copied from one Ghostty text result. The C API returns
+/// a pointer and a `uintptr_t` length, so both the conversion and the copy
+/// must be bounded before Swift creates a `Data` value.
+private let terminalControllerMaximumTextBytes = 4 * 1024 * 1024
+/// Browser state contains cookies and storage values. Keep both save and load
+/// bounded so a page-controlled storage object cannot turn a socket command
+/// into an unbounded allocation.
+private let terminalControllerMaximumBrowserStateBytes = 4 * 1024 * 1024
+
 extension Notification.Name {
     static let socketListenerDidStart = Notification.Name("cmux.socketListenerDidStart")
     // terminalSurfaceDidBecomeReady moved to CmuxTerminal (posted by TerminalSurface).
@@ -1937,13 +1946,14 @@ class TerminalController {
     private nonisolated static func socketCommandDebugInfo(_ command: String) -> SocketCommandDebugInfo {
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.hasPrefix("{"),
-              let data = trimmed.data(using: .utf8),
-              let dict = (try? JSONSerialization.jsonObject(with: data, options: [])) as? [String: Any],
-              let method = dict["method"] as? String else {
+              case .success(let request) = v2Parser.request(fromLine: trimmed) else {
             let commandKey = trimmed.split(separator: " ", maxSplits: 1).first.map(String.init) ?? "<empty>"
             return SocketCommandDebugInfo(protocolName: "v1", commandKey: sanitizedSocketDebugToken(commandKey))
         }
-        return SocketCommandDebugInfo(protocolName: "v2", commandKey: sanitizedSocketDebugToken(method))
+        return SocketCommandDebugInfo(
+            protocolName: "v2",
+            commandKey: sanitizedSocketDebugToken(request.method)
+        )
     }
 
     private nonisolated static func sanitizedSocketDebugToken(_ value: String) -> String {
@@ -5731,10 +5741,15 @@ class TerminalController {
             ghostty_surface_free_text(surface, &text)
         }
 
-        guard let ptr = text.text, text.text_len > 0 else {
+        guard text.text_len > 0 else {
             return ""
         }
-        let rawData = Data(bytes: ptr, count: Int(text.text_len))
+        guard let ptr = text.text,
+              let byteCount = Int(exactly: text.text_len),
+              byteCount <= terminalControllerMaximumTextBytes else {
+            return nil
+        }
+        let rawData = Data(bytes: ptr, count: byteCount)
         return String(decoding: rawData, as: UTF8.self)
     }
 
@@ -5765,6 +5780,16 @@ class TerminalController {
         includeScrollback: Bool,
         lineLimit: Int?
     ) -> Result<TerminalTextPayload, TerminalTextPayloadError> {
+        // `TerminalTextRawSnapshot` is normally filled by the guarded Ghostty
+        // read above, but it is also a package-facing value used by tests and
+        // alternate capture paths. Re-check every component before doing
+        // merges, line scans, or base64 expansion.
+        let rawComponents = [snapshot.viewport, snapshot.screen, snapshot.history, snapshot.active]
+        guard rawComponents.compactMap({ $0 }).allSatisfy({
+            $0.utf8.count <= terminalControllerMaximumTextBytes
+        }) else {
+            return .failure(TerminalTextPayloadError(message: "Terminal text exceeds the safe limit"))
+        }
         let output: String
         if includeScrollback {
             var candidates: [String] = []
@@ -5805,6 +5830,9 @@ class TerminalController {
             output = viewport
         }
 
+        guard output.utf8.count <= terminalControllerMaximumTextBytes else {
+            return .failure(TerminalTextPayloadError(message: "Terminal text exceeds the safe limit"))
+        }
         let base64 = output.data(using: .utf8)?.base64EncodedString() ?? ""
         return .success(TerminalTextPayload(text: output, base64: base64))
     }
@@ -6038,7 +6066,10 @@ class TerminalController {
             }
         }
 
-        guard let data = try? Data(contentsOf: fileURL),
+        guard let data = Self.readBoundedRegularFileData(
+            at: fileURL,
+            maximumBytes: terminalControllerMaximumTextBytes
+        ),
               let rawOutput = String(data: data, encoding: .utf8) else {
             return nil
         }
@@ -6049,6 +6080,80 @@ class TerminalController {
             output = Self.tailTerminalLines(output, maxLines: lineLimit)
         }
         return output
+    }
+
+    /// Reads a generated VT export through a verified descriptor. A path is
+    /// returned by a clipboard helper and can be replaced before the read, so
+    /// `Data(contentsOf:)` would permit both symlink redirection and an
+    /// unbounded allocation. `O_NOFOLLOW`, a regular-file check, and the
+    /// one-byte-over-limit read keep this boundary fail closed.
+    private nonisolated static func readBoundedRegularFileData(
+        at url: URL,
+        maximumBytes: Int
+    ) -> Data? {
+        guard maximumBytes > 0,
+              url.isFileURL,
+              url.path.hasPrefix("/"),
+              url.path.utf8.count <= 4 * 1024 else { return nil }
+#if canImport(Darwin)
+        let descriptor = Darwin.open(
+            url.path,
+            O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW
+        )
+        guard descriptor >= 0 else { return nil }
+        defer { Darwin.close(descriptor) }
+
+        var initial = Darwin.stat()
+        guard Darwin.fstat(descriptor, &initial) == 0,
+              (initial.st_mode & S_IFMT) == S_IFREG,
+              initial.st_size >= 0,
+              initial.st_size <= off_t(maximumBytes) else { return nil }
+
+        let chunkSize = 64 * 1024
+        var result = Data()
+        result.reserveCapacity(Int(initial.st_size))
+        var buffer = [UInt8](repeating: 0, count: chunkSize)
+        while result.count <= maximumBytes {
+            let amount = min(chunkSize, maximumBytes + 1 - result.count)
+            let readCount = buffer.withUnsafeMutableBytes { raw in
+                Darwin.read(descriptor, raw.baseAddress, amount)
+            }
+            if readCount > 0 {
+                buffer.withUnsafeBytes { raw in
+                    result.append(contentsOf: raw.bindMemory(to: UInt8.self).prefix(readCount))
+                }
+            } else if readCount == 0 {
+                break
+            } else if errno == EINTR {
+                continue
+            } else {
+                return nil
+            }
+        }
+        guard result.count <= maximumBytes else { return nil }
+        var final = Darwin.stat()
+        guard Darwin.fstat(descriptor, &final) == 0,
+              (final.st_mode & S_IFMT) == S_IFREG,
+              final.st_size >= 0,
+              final.st_size <= off_t(maximumBytes) else { return nil }
+        return result
+#else
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        var result = Data()
+        while result.count <= maximumBytes {
+            let amount = min(64 * 1024, maximumBytes + 1 - result.count)
+            let chunk: Data?
+            do {
+                chunk = try handle.read(upToCount: amount)
+            } catch {
+                return nil
+            }
+            guard let chunk, !chunk.isEmpty else { break }
+            result.append(chunk)
+        }
+        return result.count <= maximumBytes ? result : nil
+#endif
     }
 
     private func readPlainTerminalTextForSnapshot(
@@ -11227,8 +11332,24 @@ class TerminalController {
                 "frame_selector": v2OrNull(stateSnapshot.frameSelector)
             ]
 
+            guard SidebarJSONGuard.isBoundedObject(
+                state,
+                maximumBytes: terminalControllerMaximumBrowserStateBytes,
+                maximumCollectionItems: 2_048
+            ) else {
+                return .err(code: "resource_limit", message: "Browser state is too large", data: nil)
+            }
             do {
                 let data = try JSONSerialization.data(withJSONObject: state, options: [.prettyPrinted, .sortedKeys])
+                guard data.count <= terminalControllerMaximumBrowserStateBytes,
+                      SidebarJSONGuard.isBoundedSyntax(
+                          data,
+                          maximumDepth: 64,
+                          maximumTokens: 200_000,
+                          maximumBytes: terminalControllerMaximumBrowserStateBytes
+                      ) else {
+                    return .err(code: "resource_limit", message: "Browser state is too large", data: nil)
+                }
                 try data.write(to: URL(fileURLWithPath: path), options: .atomic)
             } catch {
                 return .err(code: "internal_error", message: "Failed to write state file", data: ["path": path, "error": error.localizedDescription])
@@ -11249,8 +11370,23 @@ class TerminalController {
         let url = URL(fileURLWithPath: path)
         let raw: [String: Any]
         do {
-            let data = try Data(contentsOf: url)
-            guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            guard let data = Self.readBoundedRegularFileData(
+                at: url,
+                maximumBytes: terminalControllerMaximumBrowserStateBytes
+            ),
+            SidebarJSONGuard.isBoundedSyntax(
+                data,
+                maximumDepth: 64,
+                maximumTokens: 200_000,
+                maximumBytes: terminalControllerMaximumBrowserStateBytes
+            ),
+            let object = try? JSONSerialization.jsonObject(with: data),
+            SidebarJSONGuard.isBoundedObject(
+                object,
+                maximumBytes: terminalControllerMaximumBrowserStateBytes,
+                maximumCollectionItems: 2_048
+            ),
+            let obj = object as? [String: Any] else {
                 return .err(code: "invalid_params", message: "State file must contain a JSON object", data: ["path": path])
             }
             raw = obj

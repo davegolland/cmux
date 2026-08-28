@@ -50,6 +50,43 @@ struct ArtifactByteReaderTests {
         }
     }
 
+    @Test("fetch clamps a hostile length before allocating")
+    func fetchLengthIsBounded() throws {
+        try withTemporaryDirectory { directory in
+            let file = directory.appendingPathComponent("bytes.bin")
+            try Data(repeating: 0x41, count: 32).write(to: file)
+
+            let chunk = try ArtifactByteReader().fetch(
+                path: file.path,
+                offset: 0,
+                length: .max
+            )
+
+            #expect(chunk.data.count == 32)
+            #expect(chunk.eof)
+        }
+    }
+
+    @Test("symlink metadata does not inherit the target file kind")
+    func symlinkIsNotPreviewable() throws {
+        try withTemporaryDirectory { directory in
+            let target = directory.appendingPathComponent("target.png")
+            let link = directory.appendingPathComponent("link.png")
+            try Data("not an image".utf8).write(to: target)
+            try FileManager.default.createSymbolicLink(
+                atPath: link.path,
+                withDestinationPath: target.path
+            )
+
+            let stat = try ArtifactByteReader().stat(path: link.path)
+            #expect(!stat.isDirectory)
+            #expect(stat.kind == .binary)
+            #expect(throws: ArtifactByteReader.Error.readFailed) {
+                try ArtifactByteReader().fetch(path: link.path, offset: 0, length: 1)
+            }
+        }
+    }
+
     @Test("permission denial is not reported as a missing file")
     func permissionDenied() throws {
         try withTemporaryDirectory { directory in

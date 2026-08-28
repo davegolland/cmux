@@ -45,8 +45,8 @@ public final class CustomSidebarModel {
     private var watcher: FileWatcher?
     private var reloadObserver: NSObjectProtocol?
 
-    /// The interpreter the source is rendered through. Defaults to the
-    /// in-process implementation; the app injects an out-of-process,
+    /// The interpreter the source is rendered through. The package defaults
+    /// to the in-process implementation for API compatibility; the app injects an out-of-process,
     /// crash-isolating ``SidebarInterpreting`` so an interpreter fault from an
     /// untrusted sidebar can't take down the host.
     private let interpreter: any SidebarInterpreting
@@ -178,7 +178,7 @@ public final class CustomSidebarModel {
         let ext = fileURL.pathExtension.lowercased()
         if ext == "js" {
             do {
-                state = .jsSource(try String(contentsOf: fileURL, encoding: .utf8))
+                state = .jsSource(try SidebarBoundedFileReader.string(from: fileURL, fileManager: fileManager))
             } catch {
                 state = .failed(CustomSidebarValidator().describe(error))
             }
@@ -186,15 +186,15 @@ public final class CustomSidebarModel {
         }
         if ext == "swift" {
             do {
-                state = .swiftSource(try String(contentsOf: fileURL, encoding: .utf8))
+                state = .swiftSource(try SidebarBoundedFileReader.string(from: fileURL, fileManager: fileManager))
             } catch {
                 state = .failed(CustomSidebarValidator().describe(error))
             }
             return
         }
         do {
-            let data = try Data(contentsOf: fileURL)
-            let document = try JSONDecoder().decode(DSLDocument.self, from: data)
+            let data = try SidebarBoundedFileReader.data(from: fileURL, fileManager: fileManager)
+            let document = try DSLDocument.decodeValidated(from: data)
             state = .json(document)
         } catch {
             state = .failed(CustomSidebarValidator().describe(error))

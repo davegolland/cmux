@@ -60,13 +60,17 @@ extension TerminalController {
 
     nonisolated func passwordAuthRequiredResponse(for command: String) -> String {
         let message = "Authentication required. Send auth <password> first."
-        guard command.hasPrefix("{"),
-              let data = command.data(using: .utf8),
-              let dict = (try? JSONSerialization.jsonObject(with: data, options: [])) as? [String: Any] else {
+        guard command.hasPrefix("{") else {
             return "ERROR: Authentication required — send auth <password> first"
         }
-        let id = dict["id"]
-        return v2Error(id: id, code: "auth_required", message: message)
+        switch Self.v2Parser.request(fromLine: command) {
+        case .success(let request):
+            return v2Error(id: request.id?.foundationObject, code: "auth_required", message: message)
+        case .failure(.missingMethod(let id)):
+            return v2Error(id: id?.foundationObject, code: "auth_required", message: message)
+        case .failure:
+            return "ERROR: Authentication required — send auth <password> first"
+        }
     }
 
     nonisolated func passwordLoginV1ResponseIfNeeded(
@@ -102,34 +106,34 @@ extension TerminalController {
         passwordAuthorization: inout SocketPasswordAuthorization
     ) -> String? {
         guard command.hasPrefix("{"),
-              let data = command.data(using: .utf8),
-              let dict = (try? JSONSerialization.jsonObject(with: data, options: [])) as? [String: Any] else {
+              case .success(let request) = Self.v2Parser.request(fromLine: command) else {
             return nil
         }
-        let id = dict["id"]
-        let method = (dict["method"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard method == "auth.login" else {
+        guard request.method == "auth.login" else {
             return nil
         }
 
-        guard let params = dict["params"] as? [String: Any],
-              let provided = params["password"] as? String else {
-            return v2Error(id: id, code: "invalid_params", message: "auth.login requires params.password")
+        guard case let .string(provided)? = request.params["password"] else {
+            return v2Error(
+                id: request.id?.foundationObject,
+                code: "invalid_params",
+                message: "auth.login requires params.password"
+            )
         }
 
         guard passwordStore.hasConfiguredPassword(allowLazyKeychainFallback: true) else {
             return v2Error(
-                id: id,
+                id: request.id?.foundationObject,
                 code: "auth_unconfigured",
                 message: "Password mode is enabled but no socket password is configured in Settings."
             )
         }
 
         guard passwordStore.verify(password: provided, allowLazyKeychainFallback: true) else {
-            return v2Error(id: id, code: "auth_failed", message: "Invalid password")
+            return v2Error(id: request.id?.foundationObject, code: "auth_failed", message: "Invalid password")
         }
         passwordAuthorization.authenticate(password: provided)
-        return v2Ok(id: id, result: ["authenticated": true])
+        return v2Ok(id: request.id?.foundationObject, result: ["authenticated": true])
     }
 
     nonisolated func authResponseIfNeeded(

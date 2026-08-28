@@ -159,4 +159,38 @@ struct AgentChatChildRunTests {
         )
         #expect(rec.children.count == 1)
     }
+
+    @Test func childLabelsAndIDsAreBoundedAndControlCharactersRemoved() {
+        var rec = record()
+        let longID = String(repeating: "i", count: 512)
+        let longLabel = String(repeating: "label", count: 200)
+        AgentChatSessionRegistry.applyChildRunEvent(
+            &rec,
+            event: event(
+                .preToolUse,
+                tool: "Agent",
+                input: "{\"description\":\"\(longLabel)\"}",
+                requestId: longID,
+                at: 1
+            )
+        )
+        #expect(rec.children.count == 1)
+        #expect(rec.children[0].id.utf8.count <= 128)
+        #expect(rec.children[0].id.unicodeScalars.allSatisfy { !CharacterSet.controlCharacters.contains($0) })
+        #expect(rec.children[0].label?.utf8.count ?? 0 <= 512)
+        #expect(rec.children[0].label?.unicodeScalars.allSatisfy { !CharacterSet.controlCharacters.contains($0) } == true)
+    }
+
+    @Test func runningChildrenCannotGrowPastCapacity() {
+        var rec = record()
+        for index in 0..<(AgentChatChildRun.capacity + 8) {
+            AgentChatSessionRegistry.applyChildRunEvent(
+                &rec,
+                event: event(.subagentStart, requestId: "child-\(index)", at: TimeInterval(index))
+            )
+        }
+        #expect(rec.children.count == AgentChatChildRun.capacity)
+        #expect(rec.children.allSatisfy(\.isRunning))
+        #expect(rec.children.last?.id == "child-\(AgentChatChildRun.capacity + 7)")
+    }
 }

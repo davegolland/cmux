@@ -54,6 +54,10 @@ internal import os
 /// the queue-side drain can never `accept(2)` on a recycled descriptor.
 @MainActor
 public final class SocketControlServer {
+    /// Hard ceiling for the accepted-connection mailbox. The initializer is
+    /// public and test/configuration code must not be able to request an
+    /// unbounded AsyncStream buffer.
+    private static let maximumBufferedConnections = 256
     /// The full listener state machine, main-actor isolated. One value,
     /// mirroring the legacy field block.
     struct ListenerState {
@@ -196,9 +200,13 @@ public final class SocketControlServer {
         self.connectionAuthorizationState = SocketConnectionAuthorizationState()
         self.effectivePasswordProvider = effectivePasswordProvider
         self.events = events
+        let safeBufferedConnections = min(
+            max(0, maximumBufferedConnections),
+            Self.maximumBufferedConnections
+        )
         (self.connections, self.connectionsContinuation) =
             AsyncStream<ControlConnection>.makeStream(
-                bufferingPolicy: .bufferingOldest(max(0, maximumBufferedConnections))
+                bufferingPolicy: .bufferingOldest(safeBufferedConnections)
             )
         startObservingAuthorizationChanges(authorizationChangeSignals: authorizationChangeSignals)
     }

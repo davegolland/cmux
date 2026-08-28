@@ -6,12 +6,10 @@ import Foundation
 extension TerminalController {
     nonisolated func isEventsStreamRequest(_ line: String) -> Bool {
         guard line.hasPrefix("{"),
-              let data = line.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let method = object["method"] as? String else {
+              case .success(let request) = Self.v2Parser.request(fromLine: line) else {
             return false
         }
-        return method == "events.stream"
+        return request.method == "events.stream"
     }
 
     nonisolated func handleEventsStreamRequest(
@@ -26,8 +24,9 @@ extension TerminalController {
             authorizationGeneration,
             passwordAuthorization: &streamPasswordAuthorization
         ) else { return }
-        guard let data = line.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        guard line.hasPrefix("{"),
+              case .success(let request) = Self.v2Parser.request(fromLine: line),
+              request.method == "events.stream" else {
             guard socketEventStreamAuthorizationIsCurrent(
                 authorizationGeneration,
                 passwordAuthorization: &streamPasswordAuthorization
@@ -40,11 +39,22 @@ extension TerminalController {
             return
         }
 
-        let params = object["params"] as? [String: Any] ?? [:]
-        let afterSequence = CmuxEventBus.int64(params["after_seq"] ?? params["after"])
-        let names = Self.stringSet(params["names"] ?? params["name"])
-        let categories = Self.stringSet(params["categories"] ?? params["category"])
-        let includeHeartbeats = Self.boolParam(params["include_heartbeats"] ?? params["include_heartbeat"]) ?? true
+        let params = request.params
+        guard let names = Self.boundedStringSet(params["names"] ?? params["name"]),
+              let categories = Self.boundedStringSet(params["categories"] ?? params["category"]) else {
+            guard socketEventStreamAuthorizationIsCurrent(
+                authorizationGeneration,
+                passwordAuthorization: &streamPasswordAuthorization
+            ) else { return }
+            _ = writeEventsStreamLine([
+                "type": "error",
+                "ok": false,
+                "error": ["code": "invalid_params", "message": "events.stream filters are too large"]
+            ], socket: socket)
+            return
+        }
+        let afterSequence = Self.eventSequence(params["after_seq"] ?? params["after"])
+        let includeHeartbeats = Self.eventBool(params["include_heartbeats"] ?? params["include_heartbeat"]) ?? true
 
         let snapshot = CmuxEventBus.shared.subscribe(
             afterSequence: afterSequence,
@@ -151,32 +161,77 @@ extension TerminalController {
         }
     }
 
-    private nonisolated static func stringSet(_ value: Any?) -> Set<String> {
-        if let string = value as? String {
-            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? [] : [trimmed]
-        }
-        if let values = value as? [String] {
-            return Set(values.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
-        }
-        if let values = value as? [Any] {
-            return Set(values.compactMap { ($0 as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
-        }
-        return []
-    }
+    private static let maximumEventFilterItems = 256
+    private static let maximumEventFilterStringBytes = 256
+    private static let maximumEventFilterTotalBytes = 32 * 1024
 
-    private nonisolated static func boolParam(_ value: Any?) -> Bool? {
-        if let number = value as? NSNumber {
-            if CFGetTypeID(number) == CFBooleanGetTypeID() { return number.boolValue }
-            if number.compare(NSNumber(value: 0)) == .orderedSame { return false }
-            if number.compare(NSNumber(value: 1)) == .orderedSame { return true }
+    /// Converts a wire filter into a small, bounded set. Returning nil means
+    /// the caller supplied an invalid or oversized filter. Only an absent
+    /// filter maps to an empty set, which means "all events".
+    private nonisolated static func boundedStringSet(_ value: JSONValue?) -> Set<String>? {
+        guard let value else { return [] }
+        let rawValues: [String]
+        switch value {
+        case .string(let string):
+            rawValues = [string]
+        case .array(let values):
+            guard values.count <= maximumEventFilterItems else { return nil }
+            var strings: [String] = []
+            strings.reserveCapacity(values.count)
+            for element in values {
+                guard case .string(let string) = element else { return nil }
+                strings.append(string)
+            }
+            rawValues = strings
+        default:
             return nil
         }
-        guard let string = value as? String else { return nil }
-        switch string.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "true", "1": return true
-        case "false", "0": return false
-        default: return nil
+
+        var result = Set<String>()
+        var totalBytes = 0
+        for rawValue in rawValues {
+            let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty else { return nil }
+            let byteCount = value.utf8.count
+            guard byteCount <= maximumEventFilterStringBytes,
+                  totalBytes <= maximumEventFilterTotalBytes - byteCount,
+                  !value.utf8.contains(where: { $0 < 0x20 || $0 == 0x7F }) else {
+                return nil
+            }
+            totalBytes += byteCount
+            result.insert(value)
+            guard result.count <= maximumEventFilterItems else { return nil }
+        }
+        return result
+    }
+
+    private nonisolated static func eventSequence(_ value: JSONValue?) -> Int64? {
+        switch value {
+        case .int(let value):
+            return value
+        case .string(let value):
+            return Int64(value)
+        default:
+            return nil
+        }
+    }
+
+    private nonisolated static func eventBool(_ value: JSONValue?) -> Bool? {
+        switch value {
+        case .bool(let value):
+            return value
+        case .int(0):
+            return false
+        case .int(1):
+            return true
+        case .string(let value):
+            switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "true", "1": return true
+            case "false", "0": return false
+            default: return nil
+            }
+        default:
+            return nil
         }
     }
 
