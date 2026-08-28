@@ -20,6 +20,14 @@ import Testing
         let negative = transport.makeSocketTimeout(-1)
         #expect(negative.tv_sec == 0)
         #expect(negative.tv_usec == 0)
+
+        let nan = transport.makeSocketTimeout(.nan)
+        #expect(nan.tv_sec == 0)
+        #expect(nan.tv_usec == 0)
+
+        let positiveInfinity = transport.makeSocketTimeout(.infinity)
+        #expect(positiveInfinity.tv_sec == Int(SocketTransport.maximumSocketTimeout))
+        #expect(positiveInfinity.tv_usec == 0)
     }
 
     @Test func acquiredLockDescriptorIsCloseOnExec() throws {

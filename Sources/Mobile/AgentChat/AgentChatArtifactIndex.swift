@@ -3,6 +3,9 @@ import Foundation
 
 /// Builds and caches the transcript-derived artifact scope for chat sessions.
 actor AgentChatArtifactIndex {
+    private static let maxTranscriptLines = AgentChatBoundedFileReader.maxTranscriptLines
+    private static let maxTranscriptLineBytes = AgentChatBoundedFileReader.maxLineBytes
+
     struct Snapshot: Sendable {
         let referencedPaths: Set<String>
         let artifacts: [ChatArtifactIndexedReference]
@@ -93,14 +96,15 @@ actor AgentChatArtifactIndex {
     }
 
     private static func cacheKey(transcriptPath: String, workingDirectory: String?) throws -> CacheKey {
-        let attributes = try FileManager.default.attributesOfItem(atPath: transcriptPath)
-        let size = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
-        let modifiedAt = attributes[.modificationDate] as? Date ?? Date(timeIntervalSince1970: 0)
+        let metadata = try AgentChatBoundedFileReader.metadata(atPath: transcriptPath)
+        guard metadata.size <= UInt64(AgentChatBoundedFileReader.maxTranscriptBytes) else {
+            throw AgentChatBoundedFileReadError.tooLarge
+        }
         return CacheKey(
             transcriptPath: transcriptPath,
             workingDirectory: workingDirectory,
-            fileSize: size,
-            modifiedAt: modifiedAt
+            fileSize: metadata.size,
+            modifiedAt: metadata.modifiedAt ?? Date(timeIntervalSince1970: 0)
         )
     }
 
@@ -110,8 +114,17 @@ actor AgentChatArtifactIndex {
         workingDirectory: String?,
         generation: String
     ) throws -> Snapshot {
-        let data = try Data(contentsOf: URL(fileURLWithPath: transcriptPath), options: .mappedIfSafe)
-        let text = String(decoding: data, as: UTF8.self)
+        let data = try AgentChatBoundedFileReader.data(atPath: transcriptPath)
+        // Validate line count and line length before materializing a String
+        // and an array of Substrings. A 32 MB file containing millions of
+        // newline bytes could otherwise create a very large temporary object
+        // graph before the post-split bounds check runs.
+        guard isBoundedTranscriptLines(data) else {
+            throw AgentChatBoundedFileReadError.tooLarge
+        }
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw AgentChatBoundedFileReadError.readFailed
+        }
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         let parseResult: ChatTranscriptParseResult
         switch agentKind {
@@ -131,5 +144,22 @@ actor AgentChatArtifactIndex {
             artifacts: artifacts,
             generation: generation
         )
+    }
+
+    private static func isBoundedTranscriptLines(_ data: Data) -> Bool {
+        var lineCount = 1
+        var lineBytes = 0
+        for byte in data {
+            if byte == 0x0A {
+                guard lineBytes <= maxTranscriptLineBytes else { return false }
+                lineCount += 1
+                guard lineCount <= maxTranscriptLines else { return false }
+                lineBytes = 0
+            } else {
+                lineBytes += 1
+                guard lineBytes <= maxTranscriptLineBytes else { return false }
+            }
+        }
+        return lineBytes <= maxTranscriptLineBytes
     }
 }

@@ -37,6 +37,7 @@ extension AgentChatSessionRegistry {
     /// libproc: the `~/.codex/sessions/**/rollout-*.jsonl` paths the process
     /// holds open (codex keeps its rollouts open for writing).
     nonisolated static func openCodexRolloutPaths(pid: Int) -> [String] {
+        guard AgentChatPIDValidation.isValid(pid) else { return [] }
         let listSize = proc_pidinfo(pid_t(pid), PROC_PIDLISTFDS, 0, nil, 0)
         guard listSize > 0 else { return [] }
         let count = Int(listSize) / MemoryLayout<proc_fdinfo>.stride

@@ -1,5 +1,13 @@
 /// Transfer limits shared by Mac artifact RPC handlers and iOS preview code.
 public struct ChatArtifactTransferPolicy: Sendable, Equatable {
+    /// Hard protocol and memory ceilings. The initializer is public because
+    /// tests and alternate transports can provide a policy, so these limits
+    /// must also be enforced at that boundary.
+    public static let maximumRawChunkBytes = 3 * 1024 * 1024
+    public static let maximumMobileSyncFrameLimitBytes = 64 * 1024 * 1024
+    public static let maximumPreviewBytes: Int64 = 64 * 1024 * 1024
+    public static let maximumMediaPreviewBytes: Int64 = 512 * 1024 * 1024
+
     /// Default artifact transfer policy.
     public static let defaultPolicy = ChatArtifactTransferPolicy()
 
@@ -25,10 +33,22 @@ public struct ChatArtifactTransferPolicy: Sendable, Equatable {
         maxPreviewBytes: Int64 = 64 * 1024 * 1024,
         maxMediaPreviewBytes: Int64 = 512 * 1024 * 1024
     ) {
-        self.maxRawChunkBytes = maxRawChunkBytes
-        self.mobileSyncFrameLimitBytes = mobileSyncFrameLimitBytes
-        self.maxPreviewBytes = maxPreviewBytes
-        self.maxMediaPreviewBytes = maxMediaPreviewBytes
+        self.maxRawChunkBytes = min(
+            max(maxRawChunkBytes, 1),
+            Self.maximumRawChunkBytes
+        )
+        self.mobileSyncFrameLimitBytes = min(
+            max(mobileSyncFrameLimitBytes, 1_024),
+            Self.maximumMobileSyncFrameLimitBytes
+        )
+        self.maxPreviewBytes = min(
+            max(maxPreviewBytes, 1),
+            Self.maximumPreviewBytes
+        )
+        self.maxMediaPreviewBytes = min(
+            max(maxMediaPreviewBytes, 1),
+            Self.maximumMediaPreviewBytes
+        )
     }
 
     /// Clamps a requested chunk length to the policy's raw-byte maximum.
@@ -47,7 +67,13 @@ public struct ChatArtifactTransferPolicy: Sendable, Equatable {
     /// - Parameter rawByteCount: Raw chunk byte count.
     /// - Returns: Conservative encoded payload size including JSON overhead.
     public func estimatedEnvelopeByteCount(rawByteCount: Int) -> Int {
-        let base64Bytes = ((rawByteCount + 2) / 3) * 4
-        return base64Bytes + 1024
+        let bounded = min(max(rawByteCount, 0), maxRawChunkBytes)
+        let (rounded, roundedOverflow) = bounded.addingReportingOverflow(2)
+        guard !roundedOverflow else { return Int.max }
+        let (groups, _) = rounded.dividedReportingOverflow(by: 3)
+        let (base64Bytes, base64Overflow) = groups.multipliedReportingOverflow(by: 4)
+        guard !base64Overflow else { return Int.max }
+        let (total, totalOverflow) = base64Bytes.addingReportingOverflow(1_024)
+        return totalOverflow ? Int.max : total
     }
 }

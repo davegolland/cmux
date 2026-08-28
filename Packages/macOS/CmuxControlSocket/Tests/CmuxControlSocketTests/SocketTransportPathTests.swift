@@ -40,6 +40,11 @@ import Testing
     @Test func pathIdentityReportsMissingPath() {
         #expect(transport.pathIdentity(at: UnixSocketFixture.makeTempSocketPath()) == nil)
     }
+
+    @Test func socketAddressRejectsEmptyAndEmbeddedNulPaths() {
+        #expect(transport.unixSocketAddress(path: "") == nil)
+        #expect(transport.unixSocketAddress(path: "/tmp/cmux\0forged") == nil)
+    }
 }
 
 @Suite struct SocketTransportProbeTests {

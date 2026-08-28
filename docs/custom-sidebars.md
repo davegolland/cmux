@@ -168,8 +168,13 @@ Rules of the runtime:
   move_up/move_down/move_top, close_others, set/clear color and description),
   `workspace.close`, `workspace.move_to_window`, `workspace.group.action`
   (pin/unpin/ungroup/delete), `workspace.group.collapse` / `.expand`.
-- Actions: `cmux(method, params)`, `openURL(url)`, `log(message)` anywhere in
-  a handler.
+- Actions: `cmux(method, params)`, `openURL(url)`, `log(message)` in a host
+  control handler. Actions from source evaluation, data updates, or deferred
+  JavaScript work are ignored. The host applies a default-safe capability
+  policy: workspace, pane, surface, and window focus/reorder controls are
+  available; authentication, browser automation, VM/remote operations,
+  terminal input, debug, and unknown socket methods are denied. URLs must use
+  `http` or `https` and include a host.
 - Containment: the context has no filesystem, network, or timers, and a
   runaway evaluation is terminated by a watchdog. Errors show in the sidebar
   with a line number.
@@ -185,10 +190,10 @@ A ready-to-copy example ships in `Examples/CustomSidebars/workspaces.js`.
 
 ## Choosing the renderer (in-process vs remote)
 
-By default a custom sidebar renders in-process: the interpreted view mounts
-as real SwiftUI inside the cmux window, so hover styling, focus, keyboard,
-and same-frame resize all work natively. The tradeoff is that the
-interpreter shares the host process.
+By default a custom sidebar renders in a separate worker process. A malformed
+or hostile source can take down that worker without taking down cmux. The
+remote renderer supports the same data and action protocol, but native hover,
+focus, keyboard, and same-frame resize behavior is limited.
 
 For sidebars from sources you do not fully trust you can switch to the
 remote renderer, an out-of-process worker. That is the containment lane: a
@@ -199,7 +204,7 @@ Set it in **Settings → Custom Sidebars**, or in `~/.config/cmux/cmux.json`:
 
     { "customSidebars": { "renderer": "remote" } }
 
-Valid values are `"inProcess"` (default) and `"remote"`. The setting is read
+Valid values are `"remote"` (default) and `"inProcess"`. The setting is read
 live; flipping it re-renders the selected sidebar without a restart. Both
 renderers protect the host against pathological sources with an evaluation
 budget (nesting depth and total produced nodes): a render that exceeds the
@@ -273,7 +278,9 @@ with:
   current working/needs-input state began), `title` (first user prompt),
   `panelId` (the hosting terminal's `tabs[k].id`), `surfaceId` (the hosting
   tab's `tabs[k].surfaceId`, accepted by `surface.focus`), `directory`,
-  `transcriptPath`, and `pid`.
+  `transcriptPath` and `pid` stay in cmux's native session registry and are not
+  exposed to authored sidebar code. Child rows expose only display-safe ids,
+  labels, state, and epoch timestamps.
 - `tabs` (per workspace) — array of surfaces. Always: `id`, `title`,
   `focused` (Bool), `pinned` (Bool). When available: `directory`, `branch` +
   `dirty`, `ports` (array of Int).

@@ -125,11 +125,25 @@ public struct ChatArtifactIndexedReference: Sendable, Equatable, Codable, Identi
         canonicalPathByLexicalPath: inout [String: String],
         into byPath: inout [String: ChatArtifactIndexedReference]
     ) {
+        guard path.utf8.count <= ChatArtifactSecurityLimits.maxPathBytes,
+              !path.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
+            return
+        }
         let canonicalPath: String
         if let cached = canonicalPathByLexicalPath[path] {
             canonicalPath = cached
         } else {
+            // Once the gallery reaches its cap, do not invoke a filesystem
+            // canonicalizer for attacker-supplied new spellings. Existing
+            // cached paths still receive provenance and sequence updates.
+            guard byPath.count < ChatArtifactSecurityLimits.maxIndexedReferences else {
+                return
+            }
             canonicalPath = canonicalizer.canonicalPathKey(for: path)
+            guard canonicalPath.utf8.count <= ChatArtifactSecurityLimits.maxPathBytes,
+                  !canonicalPath.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
+                return
+            }
             canonicalPathByLexicalPath[path] = canonicalPath
         }
         let previous = byPath[canonicalPath]

@@ -2,6 +2,9 @@ public import Foundation
 internal import Darwin
 
 extension SocketTransport {
+    private static let maximumProbeCommandBytes = 8 * 1024 * 1024
+    private static let maximumProbeResponseBytes = 8 * 1024 * 1024
+
     /// Writes all of `data` to `socket`, retrying on `EINTR` and partial
     /// writes.
     ///
@@ -51,6 +54,20 @@ extension SocketTransport {
         at socketPath: String,
         timeout: TimeInterval
     ) -> String? {
+        // Check lengths before materializing attacker-controlled byte arrays.
+        // The exact sockaddr bound is checked again below when the address is
+        // assembled.
+        let maxSocketPathBytes = MemoryLayout<sockaddr_un>.size
+            - (MemoryLayout<sockaddr_un>.offset(of: \.sun_path) ?? 0)
+        guard !command.isEmpty,
+              command.utf8.count <= Self.maximumProbeCommandBytes,
+              command.utf8.allSatisfy({ $0 != 0x00 && $0 != 0x0A && $0 != 0x0D }),
+              !socketPath.isEmpty,
+              socketPath.utf8.count + 1 <= maxSocketPathBytes,
+              !socketPath.utf8.contains(0) else {
+            return nil
+        }
+        let commandBytes = Array(command.utf8)
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { return nil }
         defer { close(fd) }
@@ -87,13 +104,16 @@ extension SocketTransport {
         }
         guard connectResult == 0 else { return nil }
 
-        guard writeAll(Data((command + "\n").utf8), to: fd) else { return nil }
+        guard writeAll(Data(commandBytes + [0x0A]), to: fd) else { return nil }
 
         var buffer = [UInt8](repeating: 0, count: 4096)
-        var response = ""
+        var responseBytes: [UInt8] = []
+        responseBytes.reserveCapacity(buffer.count)
 
         while true {
-            let count = read(fd, &buffer, buffer.count)
+            let count = buffer.withUnsafeMutableBytes { rawBuffer in
+                read(fd, rawBuffer.baseAddress, rawBuffer.count)
+            }
             if count < 0 {
                 let readErrno = errno
                 if readErrno == EINTR {
@@ -107,14 +127,15 @@ extension SocketTransport {
             if count == 0 {
                 break
             }
-            if let chunk = String(bytes: buffer[0..<count], encoding: .utf8) {
-                response.append(chunk)
-                if let newlineIndex = response.firstIndex(of: "\n") {
-                    return String(response[..<newlineIndex])
-                }
+            let (newCount, overflowed) = responseBytes.count.addingReportingOverflow(count)
+            guard !overflowed, newCount <= Self.maximumProbeResponseBytes else { return nil }
+            responseBytes.append(contentsOf: buffer[0..<count])
+            if let newlineIndex = responseBytes.firstIndex(of: 0x0A) {
+                return String(bytes: responseBytes[..<newlineIndex], encoding: .utf8)
             }
         }
 
+        guard let response = String(bytes: responseBytes, encoding: .utf8) else { return nil }
         let trimmed = response.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }

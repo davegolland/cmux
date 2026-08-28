@@ -72,7 +72,7 @@ public actor RenderWorkerClient {
         self.executableURL = executableURL
         self.arguments = arguments
         self.sourceKey = sourceKey
-        self.ackTimeout = ackTimeout
+        self.ackTimeout = RenderWorkerDeadline.clamp(ackTimeout)
         self.extraEnvironment = extraEnvironment
     }
 
@@ -85,7 +85,12 @@ public actor RenderWorkerClient {
     public func subscribe() -> AsyncStream<RenderWorkerEvent> {
         let id = nextSubscriberID
         nextSubscriberID += 1
-        let (stream, continuation) = AsyncStream.makeStream(of: RenderWorkerEvent.self)
+        // Subscriber callbacks are external consumers. Keep a bounded
+        // mailbox so a stalled surface cannot make worker events accumulate
+        // without limit.
+        let (stream, continuation) = AsyncStream<RenderWorkerEvent>.makeStream(
+            bufferingPolicy: .bufferingOldest(64)
+        )
         continuation.onTermination = { [weak self] _ in
             Task { [weak self] in await self?.unsubscribe(id) }
         }
@@ -122,6 +127,7 @@ public actor RenderWorkerClient {
             topInset: topInset,
             bottomInset: bottomInset
         )
+        guard scene.isWithinSecurityLimits() else { return }
         nextSceneSeq &+= 1
         lastScene = scene
         send(.scene(scene), ackSequence: scene.seq)
@@ -129,6 +135,7 @@ public actor RenderWorkerClient {
 
     /// Tells the worker the host surface's size or backing scale changed.
     public func resize(_ geometry: RenderSurfaceGeometry) {
+        guard geometry.isWithinSecurityLimits() else { return }
         guard geometry != lastGeometry else { return }
         lastGeometry = geometry
         send(.resize(geometry))
@@ -136,13 +143,16 @@ public actor RenderWorkerClient {
 
     /// Forwards a pointer interaction to be replayed in the worker.
     public func forward(_ event: RenderPointerEvent) {
+        guard event.isWithinSecurityLimits() else { return }
         send(.pointer(event))
     }
 
     /// Forwards an explicit reload request (host notifications don't cross
     /// the process boundary).
     public func requestReload(names: [String]?) {
-        send(.reloadSidebars(names))
+        let message = RenderWorkerInbound.reloadSidebars(names)
+        guard message.isWithinSecurityLimits() else { return }
+        send(message)
     }
 
     /// Terminates the worker. The next send relaunches it. Call from the
@@ -157,6 +167,7 @@ public actor RenderWorkerClient {
         _ message: RenderWorkerInbound,
         ackSequence: UInt64? = nil
     ) {
+        guard message.isWithinSecurityLimits() else { return }
         guard let outbound = RenderWorkerOutboundWrite(
             message: message,
             remainingRelaunches: 1,
@@ -245,10 +256,7 @@ public actor RenderWorkerClient {
         let stdout = Pipe()
         process.standardInput = stdin
         process.standardOutput = stdout
-        if !extraEnvironment.isEmpty {
-            process.environment = ProcessInfo.processInfo.environment
-                .merging(extraEnvironment) { _, new in new }
-        }
+        process.environment = SidebarWorkerEnvironment.make(extra: extraEnvironment)
 
         let channel = try LengthPrefixedMessageChannel(
             readFD: stdout.fileHandleForReading.fileDescriptor,
@@ -294,10 +302,21 @@ public actor RenderWorkerClient {
         let readChannel = channel
         let reader = Thread { [weak self] in
             let decoder = JSONDecoder()
+            var invalidFrameCount = 0
             while let data = readChannel.receiveMessage() {
-                guard let message = try? decoder.decode(RenderWorkerOutbound.self, from: data) else {
+                guard JSONFrameGuard.isBounded(data),
+                      let message = try? decoder.decode(RenderWorkerOutbound.self, from: data),
+                      message.isWithinSecurityLimits() else {
+                    invalidFrameCount += 1
+                    if invalidFrameCount >= JSONFrameGuard.maximumConsecutiveInvalidFrames {
+                        Task { [weak self] in
+                            await self?.protocolViolation(generation: gen)
+                        }
+                        break
+                    }
                     continue
                 }
+                invalidFrameCount = 0
                 Task { [weak self] in
                     guard let self else { return }
                     await self.deliver(message, generation: gen)
@@ -364,6 +383,7 @@ public actor RenderWorkerClient {
 
     private func deliver(_ message: RenderWorkerOutbound, generation gen: Int) {
         guard gen == generation else { return } // ignore a superseded worker
+        guard message.isWithinSecurityLimits() else { return }
         switch message {
         case let .context(contextId):
             currentContextId = contextId
@@ -376,6 +396,11 @@ public actor RenderWorkerClient {
         }
     }
 
+    private func protocolViolation(generation gen: Int) {
+        guard gen == generation else { return }
+        discardWorker()
+    }
+
     /// Terminates the current worker and forgets it, so the next send
     /// relaunches a fresh one. The old worker's reader/termination handler
     /// run under its now-stale generation and no-op.
@@ -384,6 +409,9 @@ public actor RenderWorkerClient {
         if let doomed = child {
             doomed.writer.cancel()
             try? doomed.stdin.fileHandleForWriting.close()
+            // Wake a reader blocked in receiveMessage while the terminated
+            // worker is being reaped. The generation guard ignores its EOF.
+            try? doomed.stdout.fileHandleForReading.close()
             if doomed.process.isRunning {
                 doomed.process.terminate()
             }
@@ -401,6 +429,9 @@ public actor RenderWorkerClient {
         child?.writer.cancel()
         if let stdin = child?.stdin {
             try? stdin.fileHandleForWriting.close()
+        }
+        if let stdout = child?.stdout {
+            try? stdout.fileHandleForReading.close()
         }
         child = nil
         ackWatchdog?.cancel()

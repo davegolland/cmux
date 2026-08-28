@@ -15,8 +15,23 @@ internal import os
 // parser; DispatchSource callbacks publish only immutable Data chunks through
 // the AsyncStream continuation.
 public final class ControlClientAsyncLineReader: @unchecked Sendable {
+    /// Absolute cap for an unterminated line. The request parser applies the
+    /// same bound to v2 JSON, and keeping the transport cap no larger prevents
+    /// an authenticated peer from retaining extra bytes before parsing.
+    public static let maximumBufferedBytes = 8 * 1024 * 1024
+
     private final class SourceBox: @unchecked Sendable {
         var source: (any DispatchSourceRead)?
+    }
+
+    /// The authorization deadline and byte counter are touched by the
+    /// connection task and by `clearLimits()`/the deadline task. Keep the
+    /// transition atomic so a concurrent authorization update cannot reset a
+    /// counter halfway through a chunk and bypass the preauthorization cap.
+    private struct LimitState: Sendable {
+        var limits: ControlClientLineReadLimits?
+        var bytesRead = 0
+        var deadlineUptimeNanoseconds: UInt64?
     }
 
     private let socket: Int32
@@ -30,16 +45,10 @@ public final class ControlClientAsyncLineReader: @unchecked Sendable {
     private var pendingBytes: [UInt8] = []
     private var pendingStartIndex = 0
     private var newlineSearchIndex = 0
-    private var limits: ControlClientLineReadLimits?
-    private var limitedBytesRead = 0
-    private var deadlineUptimeNanoseconds: UInt64? = nil
     private var deadlineTask: Task<Void, Never>? = nil
     private let monotonicNowNanoseconds: @Sendable () -> UInt64
     private let maximumBufferedBytes: Int
-    // The deadline task and the single reader task may finish/cancel on
-    // different executors. This tiny gate protects only the active-limit bit;
-    // command buffering remains owned by the reader task.
-    private let limitsActive: OSAllocatedUnfairLock<Bool>
+    private let limitState: OSAllocatedUnfairLock<LimitState>
 
     /// Creates an async reader over a non-blocking descriptor.
     ///
@@ -54,12 +63,17 @@ public final class ControlClientAsyncLineReader: @unchecked Sendable {
         socket: Int32,
         initialLimits: ControlClientLineReadLimits? = nil,
         authorizationRevocationSignal: SocketAuthorizationRevocationSignal? = nil,
-        maximumBufferedBytes: Int = 16 * 1024 * 1024,
+        maximumBufferedBytes: Int = 8 * 1024 * 1024,
         monotonicNowNanoseconds: (@Sendable () -> UInt64)? = nil
     ) {
         self.socket = socket
-        self.maximumBufferedBytes = max(1, maximumBufferedBytes)
-        self.limitsActive = OSAllocatedUnfairLock(initialState: initialLimits != nil)
+        self.maximumBufferedBytes = min(
+            max(1, maximumBufferedBytes),
+            Self.maximumBufferedBytes
+        )
+        self.limitState = OSAllocatedUnfairLock(
+            initialState: LimitState(limits: initialLimits)
+        )
         self.monotonicNowNanoseconds = monotonicNowNanoseconds ?? {
             DispatchTime.now().uptimeNanoseconds
         }
@@ -125,13 +139,14 @@ public final class ControlClientAsyncLineReader: @unchecked Sendable {
             revocationSource = nil
         }
 
-        limits = initialLimits
         if let initialLimits {
             let milliseconds = UInt64(clamping: max(0, initialLimits.timeoutMilliseconds))
             let (duration, overflowed) = milliseconds.multipliedReportingOverflow(by: 1_000_000)
             let now = self.monotonicNowNanoseconds()
             let (deadline, additionOverflowed) = now.addingReportingOverflow(duration)
-            deadlineUptimeNanoseconds = overflowed || additionOverflowed ? .max : deadline
+            limitState.withLock {
+                $0.deadlineUptimeNanoseconds = overflowed || additionOverflowed ? .max : deadline
+            }
             if !overflowed {
                 let deadlineContinuation = continuation
                 deadlineTask = Task { [weak self] in
@@ -140,7 +155,7 @@ public final class ControlClientAsyncLineReader: @unchecked Sendable {
                     } catch {
                         return
                     }
-                    guard self?.limitsActive.withLock({ $0 }) == true else { return }
+                    guard self?.limitState.withLock({ $0.limits != nil }) == true else { return }
                     deadlineContinuation.finish()
                 }
             }
@@ -160,10 +175,11 @@ public final class ControlClientAsyncLineReader: @unchecked Sendable {
 
     /// Removes preauthorization limits after the peer proves authorization.
     public func clearLimits() {
-        limits = nil
-        limitsActive.withLock { $0 = false }
-        limitedBytesRead = 0
-        deadlineUptimeNanoseconds = nil
+        limitState.withLock {
+            $0.limits = nil
+            $0.bytesRead = 0
+            $0.deadlineUptimeNanoseconds = nil
+        }
         deadlineTask?.cancel()
         deadlineTask = nil
     }
@@ -206,11 +222,14 @@ public final class ControlClientAsyncLineReader: @unchecked Sendable {
             )
             guard let chunk = nextChunk else { return nil }
             guard !chunk.isEmpty else { continue }
-            if limitsActive.withLock({ $0 }), let limits {
-                let (total, overflowed) = limitedBytesRead.addingReportingOverflow(chunk.count)
-                guard !overflowed, total <= limits.maximumBytes else { return nil }
-                limitedBytesRead = total
+            let acceptedChunk = limitState.withLock { state -> Bool in
+                guard let limits = state.limits else { return true }
+                let (total, overflowed) = state.bytesRead.addingReportingOverflow(chunk.count)
+                guard !overflowed, total <= limits.maximumBytes else { return false }
+                state.bytesRead = total
+                return true
             }
+            guard acceptedChunk else { return nil }
             pendingBytes.append(contentsOf: chunk)
             guard pendingBytes.count - pendingStartIndex <= maximumBufferedBytes else {
                 return nil
@@ -228,8 +247,10 @@ public final class ControlClientAsyncLineReader: @unchecked Sendable {
     }
 
     private var deadlineHasNotExpired: Bool {
-        guard let deadlineUptimeNanoseconds else { return true }
-        return monotonicNowNanoseconds() < deadlineUptimeNanoseconds
+        limitState.withLock { state in
+            guard let deadline = state.deadlineUptimeNanoseconds else { return true }
+            return monotonicNowNanoseconds() < deadline
+        }
     }
 
     private func nextBareNewlineIndex() -> Int? {
@@ -316,7 +337,9 @@ public final class ControlClientAsyncLineReader: @unchecked Sendable {
     ) {
         var buffer = [UInt8](repeating: 0, count: 4096)
         while true {
-            let count = read(socket, &buffer, buffer.count)
+            let count = buffer.withUnsafeMutableBytes { rawBuffer in
+                read(socket, rawBuffer.baseAddress, rawBuffer.count)
+            }
             if count > 0 {
                 if case .dropped = continuation.yield(Data(buffer[0..<count])) {
                     continuation.finish()

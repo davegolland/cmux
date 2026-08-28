@@ -34,10 +34,11 @@ public struct CustomSidebarAgentSnapshot: Sendable, Equatable {
     public let surfaceId: UUID?
     /// The session's working directory, when known (`agents[j].directory`).
     public let workingDirectory: String?
-    /// Absolute transcript JSONL path, when resolved
-    /// (`agents[j].transcriptPath`).
+    /// Absolute transcript JSONL path, when resolved. Native-only: the data
+    /// context deliberately omits this value from authored JavaScript.
     public let transcriptPath: String?
-    /// The agent process id, when known (`agents[j].pid`).
+    /// The agent process id, when known. Native-only: the data context
+    /// deliberately omits this value from authored JavaScript.
     public let pid: Int?
     /// Child agent runs (Claude Task spawns, Codex subagent runs) observed
     /// under this session (`agents[j].children`).

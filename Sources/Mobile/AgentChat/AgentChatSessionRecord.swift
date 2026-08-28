@@ -45,8 +45,16 @@ struct AgentChatSessionRecord: Sendable {
     /// Conversation title (first user prompt), filled by the tailer.
     var title: String?
 
-    /// The agent process id, for liveness sweeps.
-    var pid: Int?
+    /// The agent process id, for liveness sweeps. Hook payloads and restored
+    /// state are untrusted, so assignments outside initialization are
+    /// normalized before any POSIX process API can see them.
+    var pid: Int? {
+        didSet {
+            if let pid, !AgentChatPIDValidation.isValid(pid) {
+                self.pid = nil
+            }
+        }
+    }
 
     /// Real hook-store key, when this record is surfaced under a pending alias.
     var hookStoreSessionID: String?
@@ -57,6 +65,13 @@ struct AgentChatSessionRecord: Sendable {
     var version: Int = 0
 
     var hookStoreLookupSessionID: String { hookStoreSessionID ?? sessionID }
+
+    /// Sanitizes a record restored from persistence. Swift does not run a
+    /// property observer for memberwise initialization, so callers that load
+    /// records from disk must invoke this once before storing them.
+    mutating func sanitizePID() {
+        pid = AgentChatPIDValidation.sanitized(pid)
+    }
 
     mutating func rememberHookStoreSessionID(_ id: String) {
         if id != sessionID { hookStoreSessionID = id }
@@ -129,6 +144,24 @@ struct AgentChatSessionRecord: Sendable {
             lastActivityAt: lastActivityAt,
             version: version
         )
+    }
+}
+
+/// Safe range for values passed to `kill(2)`, `proc_pid*`, and
+/// `DispatchSource.makeProcessSource`. In particular, zero and negative
+/// values have process-group semantics on POSIX and must never come from a
+/// hook or hook-store payload.
+enum AgentChatPIDValidation {
+    static let minimum = 2
+    static let maximum = Int(Int32.max)
+
+    static func isValid(_ pid: Int) -> Bool {
+        (minimum...maximum).contains(pid)
+    }
+
+    static func sanitized(_ pid: Int?) -> Int? {
+        guard let pid, isValid(pid) else { return nil }
+        return pid
     }
 }
 

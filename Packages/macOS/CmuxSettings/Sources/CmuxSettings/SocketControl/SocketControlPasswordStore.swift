@@ -1,4 +1,5 @@
 public import Foundation
+import Darwin
 #if canImport(Security)
 import Security
 #endif
@@ -19,6 +20,11 @@ public struct SocketControlPasswordStore: Sendable {
 
     /// Default password file name.
     public static let fileName = "socket-control-password"
+
+    /// Passwords are authentication material, not bulk data. This bound also
+    /// limits allocations when a state file, environment, or legacy keychain
+    /// item has been tampered with.
+    public static let maximumPasswordUTF8Bytes = 64 * 1024
 
     private static let keychainMigrationDefaultsKey = "socketControlPasswordMigrationVersion"
     private static let keychainMigrationVersion = 1
@@ -112,6 +118,9 @@ public struct SocketControlPasswordStore: Sendable {
     ///   - allowLazyKeychainFallback: Whether to consult the legacy keychain as a last resort.
     /// - Returns: `true` only when a non-empty password is configured and equals `candidate`.
     public func verify(password candidate: String, allowLazyKeychainFallback: Bool = false) -> Bool {
+        guard candidate.utf8.count <= Self.maximumPasswordUTF8Bytes else {
+            return false
+        }
         guard let expected = configuredPassword(allowLazyKeychainFallback: allowLazyKeychainFallback),
               !expected.isEmpty else {
             return false
@@ -169,10 +178,7 @@ public struct SocketControlPasswordStore: Sendable {
         guard let fileURL = resolvedFileURL() else {
             return nil
         }
-        guard fileManager.fileExists(atPath: fileURL.path) else {
-            return nil
-        }
-        let data = try Data(contentsOf: fileURL)
+        guard let data = try readPasswordData(at: fileURL) else { return nil }
         guard let password = String(data: data, encoding: .utf8) else {
             return nil
         }
@@ -192,6 +198,9 @@ public struct SocketControlPasswordStore: Sendable {
         if normalized.isEmpty {
             try clearPassword()
             return
+        }
+        guard normalized.utf8.count <= Self.maximumPasswordUTF8Bytes else {
+            throw SocketControlPasswordStoreError.passwordTooLong
         }
 
         guard let fileURL = resolvedFileURL() else {
@@ -325,7 +334,62 @@ public struct SocketControlPasswordStore: Sendable {
     private static func normalized(_ value: String?) -> String? {
         guard let value else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
+        guard !trimmed.isEmpty,
+              trimmed.utf8.count <= Self.maximumPasswordUTF8Bytes else {
+            return nil
+        }
+        return trimmed
+    }
+
+    /// Reads through a descriptor opened without following a symlink. The
+    /// size is checked before allocation and again after reading to handle a
+    /// writer racing an authorization attempt.
+    private func readPasswordData(at url: URL) throws -> Data? {
+        let descriptor = Darwin.open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        guard descriptor >= 0 else {
+            if errno == ENOENT { return nil }
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        defer { close(descriptor) }
+
+        var initial = stat()
+        guard fstat(descriptor, &initial) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        guard (initial.st_mode & S_IFMT) == S_IFREG else { return nil }
+        guard initial.st_size >= 0,
+              UInt64(initial.st_size) <= UInt64(Self.maximumPasswordUTF8Bytes) else {
+            throw SocketControlPasswordStoreError.passwordTooLong
+        }
+
+        var data = Data()
+        data.reserveCapacity(Int(initial.st_size))
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while true {
+            let count = buffer.withUnsafeMutableBytes { rawBuffer in
+                Darwin.read(descriptor, rawBuffer.baseAddress, rawBuffer.count)
+            }
+            if count > 0 {
+                guard data.count <= Self.maximumPasswordUTF8Bytes - count else {
+                    throw SocketControlPasswordStoreError.passwordTooLong
+                }
+                data.append(contentsOf: buffer[0..<count])
+                continue
+            }
+            if count == 0 { break }
+            if errno == EINTR { continue }
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+
+        var final = stat()
+        guard fstat(descriptor, &final) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        guard final.st_size == initial.st_size,
+              data.count <= Self.maximumPasswordUTF8Bytes else {
+            throw SocketControlPasswordStoreError.passwordTooLong
+        }
+        return data
     }
 
     private static func loadLegacyPasswordFromKeychain() -> String? {
@@ -368,4 +432,6 @@ public struct SocketControlPasswordStore: Sendable {
 public enum SocketControlPasswordStoreError: Error, Equatable, Sendable {
     /// The password file path could not be resolved (Application Support was unavailable).
     case unresolvedPasswordFilePath
+    /// The password exceeds the bounded authentication-material size.
+    case passwordTooLong
 }

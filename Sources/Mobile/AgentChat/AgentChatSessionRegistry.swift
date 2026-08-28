@@ -58,7 +58,10 @@ final class AgentChatSessionRegistry {
         restoredRecords: [AgentChatSessionRecord] = []
     ) {
         self.hookStore = hookStore
-        for record in restoredRecords {
+        for var record in restoredRecords {
+            // Restored records may come from an older or tampered local
+            // store. Normalize the pid before arming any process watcher.
+            record.sanitizePID()
             records[record.sessionID] = record
             versionBySessionID[record.sessionID] = record.version
         }
@@ -94,7 +97,9 @@ final class AgentChatSessionRegistry {
         }
         exitWatchers[sessionID]?.source.cancel()
         exitWatchers[sessionID] = nil
-        guard record.state != .ended, let pid = record.pid else { return }
+        guard record.state != .ended,
+              let pid = record.pid,
+              AgentChatPIDValidation.isValid(pid) else { return }
         // ESRCH means the process is already gone; EPERM means it exists but is
         // not signalable, which still counts as alive.
         if kill(pid_t(pid), 0) != 0, errno == ESRCH {
@@ -148,7 +153,7 @@ final class AgentChatSessionRegistry {
                     state: .idle,
                     lastActivityAt: now,
                     title: nil,
-                    pid: session.pid
+                    pid: AgentChatPIDValidation.sanitized(session.pid)
                 )
                 if observedHasRealHookStoreIdentity {
                     record.rememberHookStoreSessionID(session.sessionID)
@@ -180,7 +185,7 @@ final class AgentChatSessionRegistry {
                     if rec.workspaceID == nil { rec.workspaceID = session.workspaceID }
                     if rec.workingDirectory == nil { rec.workingDirectory = session.workingDirectory }
                     if rec.transcriptPath == nil { rec.transcriptPath = session.transcriptPath }
-                    if rec.pid == nil { rec.pid = session.pid }
+                    if rec.pid == nil { rec.pid = AgentChatPIDValidation.sanitized(session.pid) }
                 }
             }
         }
@@ -394,7 +399,8 @@ final class AgentChatSessionRegistry {
                     }
                     continue
                 }
-                let alive = entry.pid.map { !processIsDead($0) } ?? false
+                let safePID = AgentChatPIDValidation.sanitized(entry.pid)
+                let alive = safePID.map { !processIsDead($0) } ?? false
                 var record = AgentChatSessionRecord(
                     sessionID: sessionID,
                     agentKind: kind,
@@ -405,7 +411,7 @@ final class AgentChatSessionRegistry {
                     state: alive ? .idle : .ended,
                     lastActivityAt: entry.updatedAt ?? .distantPast,
                     title: nil,
-                    pid: entry.pid
+                    pid: safePID
                 )
                 record.rememberHookStoreSessionID(entry.sessionID)
                 stampLifecycleTransition(previous: nil, current: &record, at: entry.updatedAt ?? Date())
@@ -469,7 +475,7 @@ final class AgentChatSessionRegistry {
             // cannot be trusted here because the CLI posts this event
             // BEFORE rewriting the store, so a same-event consult would
             // re-adopt the dead pid. Suppress the consult for now.
-            record.pid = event.ppid
+            record.pid = AgentChatPIDValidation.sanitized(event.ppid)
             hookStoreConsultedAt[sessionID] = event.receivedAt
         }
         // The hook store is a whole-file JSON read+parse; never do it on the
@@ -839,7 +845,8 @@ final class AgentChatSessionRegistry {
     }
 
     private func processIsDead(_ pid: Int) -> Bool {
-        kill(pid_t(pid), 0) != 0 && errno == ESRCH
+        guard AgentChatPIDValidation.isValid(pid) else { return true }
+        return kill(pid_t(pid), 0) != 0 && errno == ESRCH
     }
 
 }

@@ -10542,9 +10542,15 @@ enum CmuxExtensionSidebarSelection {
     /// sidebars directory (`.swift` preferred when both exist), titled by the
     /// file's base name.
     static var customSidebarDescriptors: [CmuxSidebarProviderDescriptor] {
-        guard let entries = try? FileManager.default.contentsOfDirectory(
+        // A user-controlled sidebars directory can contain arbitrary entries.
+        // Enumerate lazily and stop after a bounded number so a directory with
+        // millions of files cannot force a large array allocation on the
+        // sidebar picker path.
+        guard let enumerator = FileManager.default.enumerator(
             at: customSidebarsDirectory,
-            includingPropertiesForKeys: nil
+            includingPropertiesForKeys: nil,
+            options: [],
+            errorHandler: { _, _ in true }
         ) else { return [] }
         // Priority when several extensions share a base name: js > swift > json.
         func priority(_ ext: String?) -> Int {
@@ -10556,10 +10562,22 @@ enum CmuxExtensionSidebarSelection {
             }
         }
         var extensionByName: [String: String] = [:]
-        for url in entries {
+        var inspected = 0
+        while let object = enumerator.nextObject() {
+            inspected += 1
+            guard inspected <= 4_096 else { break }
+            guard let url = object as? URL else { continue }
+            // Keep provider discovery at the selected directory boundary.
+            // The directory is user controlled, so avoid unbounded recursive
+            // traversal and do not expose nested files as providers.
+            if (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+                enumerator.skipDescendants()
+                continue
+            }
             let ext = url.pathExtension.lowercased()
             guard priority(ext) > 0 else { continue }
             let name = url.deletingPathExtension().lastPathComponent
+            guard isValidCustomSidebarFileBaseName(name) else { continue }
             if priority(extensionByName[name]) >= priority(ext) { continue }
             extensionByName[name] = ext
         }
@@ -10595,7 +10613,13 @@ enum CmuxExtensionSidebarSelection {
     }
 
     private static func isValidCustomSidebarFileBaseName(_ name: String) -> Bool {
-        guard !name.isEmpty, name != ".", name != ".." else { return false }
+        guard !name.isEmpty,
+              name != ".",
+              name != "..",
+              name.utf8.count <= 128,
+              name.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) else {
+            return false
+        }
         return name == (name as NSString).lastPathComponent
     }
 
@@ -12421,11 +12445,11 @@ struct VerticalTabsSidebar: View, Equatable {
             // Periodic tick so the custom sidebar re-renders live (clock,
             // countdowns, and refreshed workspace/data context), mirroring the
             // default sidebar's TimelineView. No banned timers involved.
-            // The surface mounts the in-process renderer by default (native
-            // hover/focus/keyboard, same-frame resize); the
-            // `customSidebars.renderer` setting switches it to the
-            // out-of-process worker for untrusted sources (no file-derived
-            // view code runs in the host). The @LiveSetting's initial value
+            // The surface mounts the remote renderer by default, so file-
+            // derived view code does not run in the host. The
+            // `customSidebars.renderer` setting can opt into the in-process
+            // renderer for trusted sources (native hover/focus/keyboard and
+            // same-frame resize). The @LiveSetting's initial value
             // lags one store round-trip on remount, so a non-default choice
             // can mount the other renderer for one tick before flipping;
             // harmless (the host shuts the short-lived client down on

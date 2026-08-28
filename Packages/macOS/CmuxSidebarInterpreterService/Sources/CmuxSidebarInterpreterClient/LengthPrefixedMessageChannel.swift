@@ -37,7 +37,10 @@ public struct LengthPrefixedMessageChannel: Sendable {
     /// Frames larger than this are protocol violations: real traffic is JSON
     /// of sidebar source + data context (KBs). The cap stops a corrupted or
     /// hostile peer's length header from forcing a giant allocation.
-    public static let maximumFrameLength = 64 * 1024 * 1024
+    /// Eight megabytes is above the largest bounded source + data request and
+    /// render snapshot, while avoiding a peer-controlled 64 MB allocation on
+    /// every reader thread.
+    public static let maximumFrameLength = 8 * 1024 * 1024
 
     /// Writes `payload` as one length-prefixed frame. Throws ``ChannelError``
     /// if the descriptor is closed or errors mid-write, or if `payload`

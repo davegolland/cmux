@@ -2,15 +2,18 @@ import Darwin
 import Foundation
 import JavaScriptCore
 
-/// Hard execution-time limit for a JS context group.
+/// Installs the JavaScriptCore execution limit used to contain authored code.
 ///
-/// `JSContextGroupSetExecutionTimeLimit` ships in JavaScriptCore but is
-/// declared in a non-public header (`JSContextRefPrivate.h`), so it is
-/// resolved at runtime with `dlsym` and skipped when absent. With the limit
-/// installed, a runaway evaluation (author `while(true)`) terminates with a
-/// catchable exception after `seconds`; without it, the soft guards remain
-/// (the prelude's effect-loop bound and the scene-op value diffs).
-enum JSWatchdog {
+/// The system implementation resolves Apple's private symbol at runtime. The
+/// injectable closure is intentional: tests can exercise the fail-closed path
+/// without depending on a particular SDK image, and hosts can provide a
+/// platform-specific installer when JavaScriptCore changes.
+/// The installer is called synchronously by the owning runtime. The unchecked
+/// Sendable marker covers the closure container only; no `JSContext` escapes
+/// that call, and the runtime itself remains main-actor isolated.
+struct JSWatchdog: @unchecked Sendable {
+    typealias Installer = (JSContext, Double) -> Bool
+    private let installer: Installer
     private typealias TerminateCallback = @convention(c) (JSContextRef?, UnsafeMutableRawPointer?) -> Bool
     private typealias SetLimitFn = @convention(c) (
         JSContextGroupRef?, Double, TerminateCallback?, UnsafeMutableRawPointer?
@@ -23,13 +26,29 @@ enum JSWatchdog {
         return unsafeBitCast(symbol, to: SetLimitFn.self)
     }()
 
-    /// Installs the limit on `context`'s group. Returns whether the hard
-    /// watchdog is active.
-    @discardableResult
-    static func install(on context: JSContext, seconds: Double) -> Bool {
+    /// Creates a watchdog backed by an installer closure.
+    init(installer: @escaping Installer) {
+        self.installer = installer
+    }
+
+    /// The process's JavaScriptCore watchdog implementation.
+    static let system = JSWatchdog { context, seconds in
         guard let setLimit else { return false }
         let group = JSContextGetGroup(context.jsGlobalContextRef)
         setLimit(group, seconds, { _, _ in true }, nil)
         return true
+    }
+
+    /// Installs the limit on `context`'s group. Returns whether the hard
+    /// watchdog is active.
+    @discardableResult
+    func install(on context: JSContext, seconds: Double) -> Bool {
+        installer(context, seconds)
+    }
+
+    /// Compatibility entry point for package tests and diagnostics.
+    @discardableResult
+    static func install(on context: JSContext, seconds: Double) -> Bool {
+        system.install(on: context, seconds: seconds)
     }
 }

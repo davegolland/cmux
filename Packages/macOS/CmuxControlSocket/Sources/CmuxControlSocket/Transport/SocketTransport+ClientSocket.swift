@@ -2,6 +2,11 @@ public import Foundation
 internal import Darwin
 
 extension SocketTransport {
+    /// Upper bound for kernel socket timeouts. A non-finite or accidentally
+    /// enormous configuration must not overflow the `timeval` conversion or
+    /// keep a client handler alive indefinitely.
+    static let maximumSocketTimeout: TimeInterval = 24 * 60 * 60
+
     /// Creates the listener socket (`AF_UNIX`/`SOCK_STREAM`) with `FD_CLOEXEC`
     /// set so it is not inherited by PTY-child forks.
     ///
@@ -77,7 +82,14 @@ extension SocketTransport {
     }
 
     func makeSocketTimeout(_ timeout: TimeInterval) -> timeval {
-        let normalizedTimeout = max(timeout, 0)
+        let normalizedTimeout: TimeInterval
+        if timeout.isNaN || timeout < 0 {
+            normalizedTimeout = 0
+        } else if timeout.isInfinite {
+            normalizedTimeout = Self.maximumSocketTimeout
+        } else {
+            normalizedTimeout = min(timeout, Self.maximumSocketTimeout)
+        }
         let seconds = floor(normalizedTimeout)
         let microseconds = (normalizedTimeout - seconds) * 1_000_000
         // Rounding can land exactly on 1_000_000, which is not a valid

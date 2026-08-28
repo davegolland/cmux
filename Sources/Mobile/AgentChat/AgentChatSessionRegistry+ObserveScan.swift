@@ -19,7 +19,7 @@ extension AgentChatSessionRegistry {
             record.surfaceID = session.surfaceID
             record.workingDirectory = session.workingDirectory ?? record.workingDirectory
             record.transcriptPath = session.transcriptPath ?? record.transcriptPath
-            record.pid = session.pid
+            record.pid = AgentChatPIDValidation.sanitized(session.pid)
             record.setProcessObservedIdle()
             record.lastActivityAt = now
         }
@@ -42,7 +42,7 @@ extension AgentChatSessionRegistry {
             record.surfaceID = session.surfaceID
             record.workingDirectory = session.workingDirectory ?? record.workingDirectory
             record.transcriptPath = session.transcriptPath ?? record.transcriptPath
-            record.pid = session.pid
+            record.pid = AgentChatPIDValidation.sanitized(session.pid)
             record.setProcessObservedIdle()
             record.lastActivityAt = now
         }

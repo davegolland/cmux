@@ -38,16 +38,27 @@ public struct SwiftViewInterpreter: Sendable {
     /// only the live data changes, so a host that re-renders on a timer does
     /// not re-parse unchanged source every frame.
     ///
-    /// Runs on a dedicated large-stack worker thread: `swift-syntax`'s
-    /// recursive-descent parse recurses with source nesting and untrusted
-    /// authored sidebars can nest arbitrarily deep, so a 16 MB stack absorbs
-    /// realistic depth without overflowing the (small) caller stack.
+    /// Runs on a dedicated bounded-stack worker thread. `swift-syntax`'s
+    /// recursive-descent parse recurses with source nesting; the source and
+    /// evaluation depth limits make a 4 MB stack sufficient while preventing
+    /// each concurrent validation from reserving an avoidably large stack.
     public func parse(_ source: String) -> ParsedProgram {
-        onLargeStack {
+        guard source.utf8.count <= RenderSecurityLimits.maxSourceBytes else {
+            // Do not hand oversized source to SwiftSyntax. Keep the public
+            // non-throwing API, but mark the returned program invalid so an
+            // accidental caller cannot evaluate a partial parse.
+            return ParsedProgram(file: Parser.parse(source: ""), isValid: false)
+        }
+        guard SwiftSourceSecurityGuard.isWithinLimits(source) else {
+            // Avoid handing a deeply nested hostile token stream to
+            // SwiftSyntax. Keep the non-throwing API and fail closed.
+            return ParsedProgram(file: Parser.parse(source: ""), isValid: false)
+        }
+        return onLargeStack {
             let parsed = Parser.parse(source: source)
             let file = (try? OperatorTable.standardOperators.foldAll(parsed))?
                 .as(SourceFileSyntax.self) ?? parsed
-            return ParsedProgram(file: file)
+            return ParsedProgram(file: file, isValid: true)
         }
     }
 
@@ -55,12 +66,22 @@ public struct SwiftViewInterpreter: Sendable {
     /// expression against an environment seeded with `state`. Returns `nil`
     /// when nothing supported is found.
     ///
-    /// Runs the tree-walk on a dedicated large-stack worker thread (the walker
+    /// Runs the tree-walk on a dedicated bounded-stack worker thread (the walker
     /// recurses with view nesting); the per-``EvalEnvironment`` ``RecursionBudget``
     /// backstops genuinely unbounded interpreter recursion (e.g. mutually
     /// recursive view helpers).
     public func evaluate(_ program: ParsedProgram, state: [String: SwiftValue] = [:]) -> RenderNode? {
-        onLargeStack {
+        guard program.isValid,
+              state.count <= RenderSecurityLimits.maxStateEntries,
+              state.allSatisfy({ key, value in
+                  key.utf8.count <= RenderSecurityLimits.maxTokenBytes
+                      && !key.isEmpty
+                      && !key.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })
+                      && value.isWithinSecurityLimits()
+              }) else {
+            return nil
+        }
+        return onLargeStack {
             let env = EvalEnvironment(values: state)
             self.registerFunctions(program.file.statements, env)
             for item in program.file.statements {
@@ -69,7 +90,12 @@ public struct SwiftViewInterpreter: Sendable {
                     // mid-walk; publish nothing so the host's last-good-sticky
                     // render keeps the previous output instead of flashing a
                     // partial tree.
-                    return env.budget.nodesExceeded ? nil : node
+                    guard !env.budget.exceeded,
+                          !env.budget.nodesExceeded,
+                          node.isWithinSecurityLimits() else {
+                        return nil
+                    }
+                    return node
                 }
             }
             return nil
@@ -86,7 +112,7 @@ public struct SwiftViewInterpreter: Sendable {
         evaluate(parse(source), state: state)
     }
 
-    /// Runs `work` on a dedicated 16 MB-stack worker thread and returns its
+    /// Runs `work` on a dedicated 4 MB-stack worker thread and returns its
     /// result, so deep recursive-descent parsing and tree-walking do not
     /// overflow the (small) caller stack.
     private func onLargeStack<T: Sendable>(_ work: @escaping @Sendable () -> T) -> T {
@@ -98,7 +124,7 @@ public struct SwiftViewInterpreter: Sendable {
             box.value = work()
             done.signal()
         }
-        worker.stackSize = 16 * 1024 * 1024
+        worker.stackSize = 4 * 1024 * 1024
         worker.start()
         done.wait()
         return box.value!
@@ -107,8 +133,15 @@ public struct SwiftViewInterpreter: Sendable {
     /// Registers any `func` declarations in `items` into `env` so value and
     /// view helpers can be called (including before their declaration).
     private func registerFunctions(_ items: CodeBlockItemListSyntax, _ env: EvalEnvironment) {
+        var count = 0
         for item in items {
+            guard env.budget.consume(), !env.budget.exceeded else { return }
             if let fn = item.item.as(FunctionDeclSyntax.self) {
+                count += 1
+                guard count <= RenderSecurityLimits.maxFunctionDeclarations else {
+                    env.budget.trip()
+                    return
+                }
                 env.defineFunction(fn.name.text, fn)
             }
         }
@@ -144,12 +177,20 @@ public struct SwiftViewInterpreter: Sendable {
             // composes, not just colors.
             let childBearing: Set<String> = ["overlay", "background", "mask", "safeAreaInset", "contextMenu"]
             if childBearing.contains(name), let closure = call.trailingClosure {
+                guard node.modifiers.count < RenderSecurityLimits.maxModifiersPerNode else {
+                    env.budget.trip()
+                    return nil
+                }
                 node.modifiers.append(RenderModifier(
                     name: name,
                     args: modifierArgs(call.arguments, env),
                     children: evalItems(closure.statements, env)
                 ))
                 return node
+            }
+            guard node.modifiers.count < RenderSecurityLimits.maxModifiersPerNode else {
+                env.budget.trip()
+                return nil
             }
             node.modifiers.append(RenderModifier(name: name, args: modifierArgs(call.arguments, env)))
             return node
@@ -313,6 +354,7 @@ public struct SwiftViewInterpreter: Sendable {
         registerFunctions(items, env)
         var out: [RenderNode] = []
         for item in items {
+            guard env.budget.consume(), !env.budget.exceeded else { break }
             // Stop producing once the node budget trips; the top-level
             // evaluate discards the truncated walk.
             if env.budget.nodesExceeded { break }
@@ -366,23 +408,24 @@ public struct SwiftViewInterpreter: Sendable {
            let gradient = call.arguments.first(where: { $0.label?.text == "gradient" })?.expression.as(FunctionCallExprSyntax.self) {
             arrayExpr = gradient.arguments.first(where: { $0.label?.text == "colors" })?.expression
         }
-        guard let array = arrayExpr?.as(ArrayExprSyntax.self) else { return [] }
-        return array.elements.map { element in
+        guard let array = arrayExpr?.as(ArrayExprSyntax.self),
+              array.elements.count <= RenderSecurityLimits.maxGradientStops else { return [] }
+        return array.elements.prefix(RenderSecurityLimits.maxGradientStops).map { element in
             if let literal = element.expression.as(StringLiteralExprSyntax.self) {
-                return expressions.evalString(literal, env)
+                return boundedToken(expressions.evalString(literal, env))
             }
             if let member = element.expression.as(MemberAccessExprSyntax.self) {
-                return member.declName.baseName.text // `.red` -> "red"
+                return boundedToken(member.declName.baseName.text) // `.red` -> "red"
             }
-            return exprString(element.expression, env) ?? element.expression.trimmedDescription
+            return boundedToken(exprString(element.expression, env) ?? element.expression.trimmedDescription)
         }
     }
 
     /// A gradient `UnitPoint` argument as a bare token (`.top` -> "top").
     private func gradientUnitPoint(_ label: String, _ call: FunctionCallExprSyntax) -> String {
         guard let expr = call.arguments.first(where: { $0.label?.text == label })?.expression else { return "" }
-        if let member = expr.as(MemberAccessExprSyntax.self) { return member.declName.baseName.text }
-        return expr.trimmedDescription
+        if let member = expr.as(MemberAccessExprSyntax.self) { return boundedToken(member.declName.baseName.text) }
+        return boundedToken(expr.trimmedDescription)
     }
 
     /// Normalized `ProgressView` fraction (0...1) from `value:`/`total:`, or nil
@@ -391,7 +434,9 @@ public struct SwiftViewInterpreter: Sendable {
         guard let value = doubleArgument(named: "value", call.arguments, env) else { return nil }
         let total = doubleArgument(named: "total", call.arguments, env) ?? 1
         guard total != 0 else { return nil }
-        return max(0, min(1, value / total))
+        let fraction = value / total
+        guard fraction.isFinite else { return nil }
+        return max(0, min(1, fraction))
     }
 
     /// Whether a `ScrollView(...)` declares a horizontal axis. Inspects the
@@ -407,7 +452,8 @@ public struct SwiftViewInterpreter: Sendable {
     private func evalReorderable(_ call: FunctionCallExprSyntax, _ env: EvalEnvironment) -> RenderNode? {
         guard let dataExpr = call.arguments.first(where: { $0.label == nil })?.expression,
               case let .array(items)? = expressions.eval(dataExpr, env),
-              let closure = call.trailingClosure else { return nil }
+              let closure = call.trailingClosure,
+              items.count <= RenderSecurityLimits.maxCollectionItems else { return nil }
         let method = labeledStringArgument("move", call.arguments, env) ?? "workspace.reorder"
         let idField = labeledStringArgument("id", call.arguments, env) ?? "id"
         let idParam = labeledStringArgument("idParam", call.arguments, env) ?? "workspace_id"
@@ -417,6 +463,7 @@ public struct SwiftViewInterpreter: Sendable {
         var rows: [RenderNode] = []
         var ids: [String] = []
         for item in items {
+            guard env.budget.consume(), !env.budget.exceeded else { return nil }
             let scope = env.makeChild()
             if let paramName { scope.define(paramName, item) }
             scope.define("$0", item)
@@ -445,14 +492,21 @@ public struct SwiftViewInterpreter: Sendable {
     private func evalForEach(_ call: FunctionCallExprSyntax, _ env: EvalEnvironment) -> [RenderNode] {
         guard let sequenceExpr = call.arguments.first?.expression,
               let sequence = expressions.eval(sequenceExpr, env),
-              let values = sequence.iterationValues,
               let closure = call.trailingClosure else { return [] }
+        guard let values = sequence.iterationValues else {
+            // Mark an oversized sequence as a failed evaluation instead of
+            // silently rendering an empty container. The caller keeps the
+            // previous good sidebar when the shared budget is tripped.
+            env.budget.trip()
+            return []
+        }
         let names = closureParameterNames(closure)
         var out: [RenderNode] = []
         for value in values {
             // A pathological sequence (e.g. `ForEach(0..<100_000)`) must trip
             // the node budget after a few thousand rows, not iterate to the
             // end doing wasted work.
+            guard env.budget.consume(), !env.budget.exceeded else { break }
             if env.budget.nodesExceeded { break }
             let scope = env.makeChild()
             if names.count >= 2 {
@@ -488,11 +542,20 @@ public struct SwiftViewInterpreter: Sendable {
     private func parseAction(_ closure: ClosureExprSyntax, _ env: EvalEnvironment) -> ButtonAction {
         var commands: [ActionCommand] = []
         for item in closure.statements {
+            guard env.budget.consume(), !env.budget.exceeded else {
+                return ButtonAction(commands: [])
+            }
+            guard commands.count < RenderSecurityLimits.maxActionCommands else {
+                // Reject the complete action at the capture boundary. Returning
+                // a partial command list could make an authored button's
+                // behavior depend on statement ordering.
+                return ButtonAction(commands: [])
+            }
             guard let call = item.item.as(ExprSyntax.self)?.as(FunctionCallExprSyntax.self),
                   let name = call.calledExpression.as(DeclReferenceExprSyntax.self)?.baseName.text
             else { continue }
             func value(_ arg: LabeledExprSyntax) -> String {
-                expressions.eval(arg.expression, env)?.displayString ?? arg.expression.trimmedDescription
+                boundedActionText(expressions.eval(arg.expression, env)?.displayString ?? arg.expression.trimmedDescription)
             }
             switch name {
             case "cmux":
@@ -500,6 +563,9 @@ public struct SwiftViewInterpreter: Sendable {
                 var params: [String: String] = [:]
                 for arg in call.arguments {
                     if let label = arg.label?.text {
+                        guard params.count < RenderSecurityLimits.maxActionParameters else {
+                            return ButtonAction(commands: [])
+                        }
                         params[label] = value(arg)
                     } else if method == nil {
                         method = value(arg)
@@ -533,6 +599,7 @@ public struct SwiftViewInterpreter: Sendable {
     private func evalSwitch(_ switchExpr: SwitchExprSyntax, _ env: EvalEnvironment) -> [RenderNode] {
         let subject = expressions.eval(switchExpr.subject, env)
         for caseSyntax in switchExpr.cases {
+            guard env.budget.consume(), !env.budget.exceeded else { return [] }
             guard let switchCase = caseSyntax.as(SwitchCaseSyntax.self) else { continue }
             if switchCaseMatches(switchCase.label, subject, env) {
                 return evalItems(switchCase.statements, env.makeChild())
@@ -564,9 +631,13 @@ public struct SwiftViewInterpreter: Sendable {
     private func evalFor(_ loop: ForStmtSyntax, _ env: EvalEnvironment) -> [RenderNode] {
         guard let name = loop.pattern.as(IdentifierPatternSyntax.self)?.identifier.text,
               let sequence = expressions.eval(loop.sequence, env),
-              let values = sequence.iterationValues else { return [] }
+              let values = sequence.iterationValues else {
+            env.budget.trip()
+            return []
+        }
         var out: [RenderNode] = []
         for value in values {
+            guard env.budget.consume(), !env.budget.exceeded else { break }
             if env.budget.nodesExceeded { break } // same early-out as evalForEach
             let scope = env.makeChild()
             scope.define(name, value)
@@ -576,20 +647,30 @@ public struct SwiftViewInterpreter: Sendable {
     }
 
     private func evalIf(_ ifExpr: IfExprSyntax, _ env: EvalEnvironment) -> [RenderNode] {
-        // The then-branch runs in a child scope so `if let x = …` bindings are
-        // visible to it.
-        let scope = env.makeChild()
-        if conditionsPass(ifExpr.conditions, scope) {
-            return evalItems(ifExpr.body.statements, scope)
+        // Walk an else-if chain iteratively. A source file can contain a long
+        // chain without exceeding the ordinary expression depth, and recursive
+        // descent here would put that authored shape on the native stack.
+        var current = ifExpr
+        var steps = 0
+        while true {
+            steps += 1
+            guard steps <= RenderSecurityLimits.maxValueDepth,
+                  env.budget.consume(),
+                  !env.budget.exceeded else { return [] }
+
+            // The then-branch runs in a child scope so `if let x = …` bindings
+            // are visible to it.
+            let scope = env.makeChild()
+            if conditionsPass(current.conditions, scope) {
+                return evalItems(current.body.statements, scope)
+            }
+            guard let elseBody = current.elseBody else { return [] }
+            if let block = elseBody.as(CodeBlockSyntax.self) {
+                return evalItems(block.statements, env.makeChild())
+            }
+            guard let elseIf = elseBody.as(IfExprSyntax.self) else { return [] }
+            current = elseIf
         }
-        guard let elseBody = ifExpr.elseBody else { return [] }
-        if let block = elseBody.as(CodeBlockSyntax.self) {
-            return evalItems(block.statements, env.makeChild())
-        }
-        if let elseIf = elseBody.as(IfExprSyntax.self) {
-            return evalIf(elseIf, env)
-        }
-        return []
     }
 
     /// Evaluates an `if`/`guard` condition list against `scope`, binding any
@@ -597,6 +678,7 @@ public struct SwiftViewInterpreter: Sendable {
     /// `scope` when non-nil. Returns false if any condition fails.
     private func conditionsPass(_ conditions: ConditionElementListSyntax, _ scope: EvalEnvironment) -> Bool {
         for element in conditions {
+            guard scope.budget.consume(), !scope.budget.exceeded else { return false }
             if let binding = element.condition.as(OptionalBindingConditionSyntax.self) {
                 let name = binding.pattern.as(IdentifierPatternSyntax.self)?.identifier.text
                 let resolved: SwiftValue?
@@ -620,6 +702,7 @@ public struct SwiftViewInterpreter: Sendable {
 
     private func applyBinding(_ decl: VariableDeclSyntax, _ env: EvalEnvironment) {
         for binding in decl.bindings {
+            guard env.budget.consume(), !env.budget.exceeded else { return }
             guard let name = binding.pattern.as(IdentifierPatternSyntax.self)?.identifier.text,
                   let value = binding.initializer.map({ expressions.eval($0.value, env) }) ?? nil else { continue }
             env.define(name, value)
@@ -645,8 +728,11 @@ public struct SwiftViewInterpreter: Sendable {
     private func doubleArgument(named label: String, _ args: LabeledExprListSyntax, _ env: EvalEnvironment) -> Double? {
         for arg in args where arg.label?.text == label {
             switch expressions.eval(arg.expression, env) {
-            case let .int(value): return Double(value)
-            case let .double(value): return value
+            case let .int(value):
+                let result = Double(value)
+                return result.isFinite && abs(result) <= 1_000_000 ? result : nil
+            case let .double(value):
+                return value.isFinite && abs(value) <= 1_000_000 ? value : nil
             default: return nil
             }
         }
@@ -656,21 +742,58 @@ public struct SwiftViewInterpreter: Sendable {
     /// Captures a modifier's labeled arguments, evaluating each to a string
     /// where possible (else the source token, e.g. `.infinity` / `.leading`).
     private func modifierArgs(_ args: LabeledExprListSyntax, _ env: EvalEnvironment) -> [ModifierArg] {
-        args.map { arg in
+        guard args.count <= RenderSecurityLimits.maxModifierArguments else { return [] }
+        return args.map { arg in
             // Resolve a ternary to its taken branch first, so member-token
             // choices like `sel ? .blue : .red` capture `.blue`/`.red`.
             let expr = resolveTernaryBranch(arg.expression, env)
-            let value = exprString(expr, env) ?? expr.trimmedDescription
+            let value = boundedToken(exprString(expr, env) ?? expr.trimmedDescription)
             return ModifierArg(label: arg.label?.text, value: value)
         }
     }
 
-    /// If `expr` is a ternary, evaluates the condition and returns the taken
-    /// branch (recursively); otherwise returns `expr` unchanged.
+    private func boundedToken(_ value: String) -> String {
+        guard value.utf8.count > RenderSecurityLimits.maxTokenBytes else { return value }
+        var result = ""
+        result.reserveCapacity(RenderSecurityLimits.maxTokenBytes)
+        var used = 0
+        for scalar in value.unicodeScalars {
+            let width = String(scalar).utf8.count
+            guard used + width <= RenderSecurityLimits.maxTokenBytes else { break }
+            result.unicodeScalars.append(scalar)
+            used += width
+        }
+        return result
+    }
+
+    private func boundedActionText(_ value: String) -> String {
+        guard value.utf8.count > RenderSecurityLimits.maxActionValueBytes else { return value }
+        var result = ""
+        result.reserveCapacity(RenderSecurityLimits.maxActionValueBytes)
+        var used = 0
+        for scalar in value.unicodeScalars {
+            let width = String(scalar).utf8.count
+            guard used + width <= RenderSecurityLimits.maxActionValueBytes else { break }
+            result.unicodeScalars.append(scalar)
+            used += width
+        }
+        return result
+    }
+
+    /// If `expr` is a ternary, evaluates the taken branch. Keep this iterative,
+    /// because modifier arguments are inspected outside the expression
+    /// evaluator's recursion budget and authored source can nest ternaries
+    /// deeply enough to overflow the native stack.
     private func resolveTernaryBranch(_ expr: ExprSyntax, _ env: EvalEnvironment) -> ExprSyntax {
-        guard let ternary = expr.as(TernaryExprSyntax.self) else { return expr }
-        let taken = expressions.eval(ternary.condition, env)?.isTruthy ?? false
-        return resolveTernaryBranch(taken ? ternary.thenExpression : ternary.elseExpression, env)
+        var current = expr
+        var steps = 0
+        while let ternary = current.as(TernaryExprSyntax.self) {
+            steps += 1
+            guard steps <= RenderSecurityLimits.maxValueDepth else { return expr }
+            let taken = expressions.eval(ternary.condition, env)?.isTruthy ?? false
+            current = taken ? ternary.thenExpression : ternary.elseExpression
+        }
+        return current
     }
 }
 

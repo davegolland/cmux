@@ -11,8 +11,7 @@ public struct SocketClientCapabilityEnvelope: Sendable {
     /// - Parameter capability: Opaque capability issued by
     ///   ``SocketClientCapabilityAuthority``.
     public init?(capability: String) {
-        guard !capability.isEmpty,
-              capability.unicodeScalars.allSatisfy({ !$0.properties.isWhitespace }) else {
+        guard SocketClientCapabilityCommand.isCapabilityToken(capability) else {
             return nil
         }
         self.capability = capability

@@ -1,4 +1,36 @@
+import OSLog
 import SwiftUI
+
+private let sidebarSceneLogger = Logger(subsystem: "com.cmuxterm.app", category: "SidebarScene")
+
+/// Semantic bounds for values that are safe in AppKit/SwiftUI layout APIs.
+/// `SceneStore` already rejects non-finite and very large numbers at the wire
+/// boundary; these tighter bounds also keep a valid scene from requesting an
+/// enormous layout or a negative font/sleep interval.
+private enum SceneRenderLimits {
+    static let maxDimension = 10_000.0
+    static let maxFontSize = 256.0
+    static let maxDelay = 60.0
+    static let maxLineLimit = 10_000.0
+}
+
+private func sceneNonnegative(_ value: Double?, maximum: Double = SceneRenderLimits.maxDimension) -> CGFloat? {
+    guard let value, value.isFinite, value >= 0, value <= maximum else { return nil }
+    let result = CGFloat(value)
+    return result.isFinite ? result : nil
+}
+
+private func sceneBounded(_ value: Double?, maximum: Double = SceneRenderLimits.maxDimension) -> Double? {
+    guard let value, value.isFinite, abs(value) <= maximum else { return nil }
+    return value
+}
+
+private func boundedSceneInput(_ value: String) -> String {
+    SidebarSecurityLimits.boundedString(
+        value,
+        maxBytes: SidebarSecurityLimits.maxSceneStringBytes
+    )
+}
 
 /// Sends a scene UI event (tap, move) back to the JS runtime.
 struct SceneEventSink {
@@ -134,7 +166,7 @@ private struct SceneNodeContent: View {
                 .buttonStyle(.plain)
             }
         case "spacer":
-            Spacer(minLength: node.double("minLength").map { CGFloat($0) })
+            Spacer(minLength: sceneNonnegative(node.double("minLength")))
         case "divider":
             Divider()
         case "circle":
@@ -144,7 +176,7 @@ private struct SceneNodeContent: View {
         case "rectangle":
             shape(Rectangle())
         case "roundedRectangle":
-            shape(RoundedRectangle(cornerRadius: CGFloat(node.double("cornerRadius") ?? 6)))
+            shape(RoundedRectangle(cornerRadius: sceneNonnegative(node.double("cornerRadius")) ?? 6))
         case "progress":
             if let value = node.double("value") {
                 ProgressView(value: min(max(value, 0), 1)) {
@@ -165,7 +197,7 @@ private struct SceneNodeContent: View {
     }
 
     private var spacing: CGFloat? {
-        node.double("spacing").map { CGFloat($0) }
+        sceneNonnegative(node.double("spacing"))
     }
 
     @ViewBuilder
@@ -185,12 +217,12 @@ private struct SceneNodeContent: View {
         base.fill(fill)
             .overlay {
                 if let stroke {
-                    base.stroke(stroke, lineWidth: CGFloat(node.double("strokeWidth") ?? 1))
+                    base.stroke(stroke, lineWidth: sceneNonnegative(node.double("strokeWidth"), maximum: 1_000) ?? 1)
                 }
             }
             .frame(
-                width: node.double("size").map { CGFloat($0) },
-                height: node.double("size").map { CGFloat($0) }
+                width: sceneNonnegative(node.double("size")),
+                height: sceneNonnegative(node.double("size"))
             )
     }
 
@@ -215,7 +247,7 @@ private struct SceneNodeContent: View {
             // the text at half the row. Truncating text therefore outranks
             // spacers by default; `.layoutPriority(n)` overrides.
             .layoutPriority(
-                node.double("layoutPriority")
+                sceneBounded(node.double("layoutPriority"), maximum: 10_000)
                     ?? (node.type == "text" && node.props["lineLimit"] != nil ? 1 : 0)
             )
             .opacity(hoverVisible ? 1 : 0)
@@ -267,7 +299,8 @@ private struct SceneNodeContent: View {
 
     private var fontSpec: DSLFontSpec? {
         let weight = dslFontWeight(node.string("weight"))
-        if let size = node.props["font"]?.doubleValue {
+        if let size = node.props["font"]?.doubleValue,
+           size.isFinite, size > 0, size <= SceneRenderLimits.maxFontSize {
             return dslFontSpec(named: nil, size: size, weight: weight)
         }
         if let named = node.string("font") {
@@ -301,7 +334,8 @@ private struct SceneTextFieldView: NSViewRepresentable {
         field.focusRingType = .none
         field.lineBreakMode = .byTruncatingTail
         field.font = .systemFont(
-            ofSize: CGFloat(node.props["font"]?.doubleValue ?? 13),
+            ofSize: sceneNonnegative(node.props["font"]?.doubleValue, maximum: SceneRenderLimits.maxFontSize)
+                .flatMap { $0 > 0 ? $0 : nil } ?? 13,
             weight: Self.nsWeight(node.string("weight"))
         )
         field.delegate = context.coordinator
@@ -366,7 +400,14 @@ private struct SceneTextFieldView: NSViewRepresentable {
             // (fields without an edit handler never see it - the JS side
             // only registers handlers it was given).
             guard let field = notification.object as? NSTextField else { return }
-            sink.send(nodeId, "edit", ["text": field.stringValue])
+            let text = boundedSceneInput(field.stringValue)
+            if text != field.stringValue {
+                // Paste and IME commits can bypass a character-by-character
+                // limit. Clamp the control itself so the host never retains
+                // an attacker-sized editor buffer between callbacks.
+                field.stringValue = text
+            }
+            sink.send(nodeId, "edit", ["text": text])
         }
 
         func controlTextDidEndEditing(_ notification: Notification) {
@@ -374,7 +415,7 @@ private struct SceneTextFieldView: NSViewRepresentable {
             // commit. Escape set `finished` above and must not also submit.
             guard !finished, let field = notification.object as? NSTextField else { return }
             finished = true
-            sink.send(nodeId, "submit", ["text": field.stringValue])
+            sink.send(nodeId, "submit", ["text": boundedSceneInput(field.stringValue)])
         }
     }
 }
@@ -397,7 +438,10 @@ private struct SceneTextLimits: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .lineLimit(node.double("lineLimit").map { Int($0) })
+            .lineLimit(node.double("lineLimit").flatMap {
+                guard $0.isFinite, $0 >= 0, $0 <= SceneRenderLimits.maxLineLimit else { return nil }
+                return Int(exactly: $0)
+            })
             .truncationMode(dslTruncationMode(node.string("truncation")))
     }
 }
@@ -443,7 +487,7 @@ private struct SceneBoxStyle: ViewModifier {
         // turning chevron spins in place; its layout box never moves) and
         // animates with the accordion's critically damped spring so a
         // chevron turn and a group collapse read as one motion.
-        let rotation = node.double("rotation")
+        let rotation = sceneBounded(node.double("rotation"), maximum: 360_000)
         let rotated = Group {
             if let rotation {
                 content
@@ -470,7 +514,7 @@ private struct SceneBoxStyle: ViewModifier {
             if let borderColor = dslColor(node.string("borderColor")) {
                 backed.overlay(
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .stroke(borderColor, lineWidth: CGFloat(node.double("borderWidth") ?? 1))
+                        .stroke(borderColor, lineWidth: sceneNonnegative(node.double("borderWidth"), maximum: 1_000) ?? 1)
                 )
             } else {
                 backed
@@ -485,12 +529,12 @@ private struct SceneBoxStyle: ViewModifier {
                 alignment: .leading
             )
             .frame(width: dimension("width"), height: dimension("height"))
-            .opacity((node.double("opacity") ?? 1) * fellowDragDim)
+            .opacity(min(max(node.double("opacity") ?? 1, 0), 1) * fellowDragDim)
             // Outer margin: an inset OUTSIDE the background box. This is how
             // nesting indent is expressed (the box narrows from the left,
             // right edge fixed), as opposed to paddingLeading, which indents
             // content INSIDE a full-width box.
-            .padding(.leading, CGFloat(node.double("marginLeading") ?? 0))
+            .padding(.leading, sceneNonnegative(node.double("marginLeading")) ?? 0)
             .onHover { hovering in
                 guard node.props["hoverBackground"] != nil else { return }
                 withAnimation(.easeOut(duration: 0.12)) {
@@ -516,25 +560,27 @@ private struct SceneBoxStyle: ViewModifier {
     }
 
     private var cornerRadius: CGFloat {
-        CGFloat(node.double("cornerRadius") ?? 0)
+        sceneNonnegative(node.double("cornerRadius")) ?? 0
     }
 
     private var paddingInsets: EdgeInsets {
-        let all = node.double("padding") ?? 0
-        let horizontal = node.double("paddingHorizontal") ?? all
-        let vertical = node.double("paddingVertical") ?? all
+        let all = sceneNonnegative(node.double("padding")) ?? 0
+        let horizontal = sceneNonnegative(node.double("paddingHorizontal")) ?? all
+        let vertical = sceneNonnegative(node.double("paddingVertical")) ?? all
         return EdgeInsets(
-            top: node.double("paddingTop") ?? vertical,
-            leading: node.double("paddingLeading") ?? horizontal,
-            bottom: node.double("paddingBottom") ?? vertical,
-            trailing: node.double("paddingTrailing") ?? horizontal
+            top: sceneNonnegative(node.double("paddingTop")) ?? vertical,
+            leading: sceneNonnegative(node.double("paddingLeading")) ?? horizontal,
+            bottom: sceneNonnegative(node.double("paddingBottom")) ?? vertical,
+            trailing: sceneNonnegative(node.double("paddingTrailing")) ?? horizontal
         )
     }
 
     private func dimension(_ key: String) -> CGFloat? {
         guard let prop = node.props[key] else { return nil }
-        if prop.stringValue == "infinity" { return .infinity }
-        return prop.doubleValue.map { CGFloat($0) }
+        if prop.stringValue == "infinity" {
+            return key == "maxWidth" || key == "maxHeight" ? .infinity : nil
+        }
+        return sceneNonnegative(prop.doubleValue)
     }
 }
 
@@ -546,7 +592,7 @@ private struct SceneTrailingFade: ViewModifier {
     let node: SceneNode
 
     func body(content: Content) -> some View {
-        if let width = node.double("fade") {
+        if let width = sceneNonnegative(node.double("fade")) {
             // CONSTANT trailing fade, deliberately not hover-gated and not
             // animated: it replaces trailing padding (content dissolves where
             // accessories float), and a static mask never re-renders the row
@@ -560,7 +606,7 @@ private struct SceneTrailingFade: ViewModifier {
                         startPoint: .leading,
                         endPoint: .trailing
                     )
-                    .frame(width: CGFloat(width))
+                    .frame(width: width)
                 }
             }
         } else {
@@ -641,7 +687,8 @@ private struct SceneMarqueeText: View {
                 }
                 guard !scrolling else { return }
                 marqueeLog("hover start, waiting \(delay)s")
-                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                let safeDelay = min(max(delay.isFinite ? delay : 0.5, 0), SceneRenderLimits.maxDelay)
+                try? await Task.sleep(nanoseconds: UInt64(safeDelay * 1_000_000_000))
                 guard !Task.isCancelled else { return }
                 marqueeLog("delay elapsed, scrolling on")
                 scrolling = true
@@ -680,6 +727,6 @@ private struct SceneMarqueeText: View {
 
     private func marqueeLog(_ message: String) {
         guard ProcessInfo.processInfo.environment["CMUX_SIDEBAR_MARQUEE_DEBUG"] == "1" else { return }
-        FileHandle.standardError.write(Data("marquee[\(text.prefix(12))]: \(message)\n".utf8))
+        sidebarSceneLogger.debug("marquee event: \(message, privacy: .private)")
     }
 }

@@ -46,6 +46,7 @@ actor AgentChatTranscriptTailer {
     private var watcher: FileWatcher?
     private var started = false
     private var reportedTitle = false
+    private var readsDisabled = false
 
     /// Creates a tailer.
     ///
@@ -67,8 +68,8 @@ actor AgentChatTranscriptTailer {
         self.sessionID = sessionID
         self.agentKind = agentKind
         self.path = path
-        self.maxInitialLines = maxInitialLines
-        self.maxCachedMessages = maxCachedMessages
+        self.maxInitialLines = max(1, min(maxInitialLines, AgentChatBoundedFileReader.maxTranscriptLines))
+        self.maxCachedMessages = max(1, min(maxCachedMessages, 10_000))
         self.onBatch = onBatch
     }
 
@@ -78,6 +79,7 @@ actor AgentChatTranscriptTailer {
         guard !started else { return }
         started = true
         loadInitialTail()
+        guard !readsDisabled else { return }
         let watcher = FileWatcher(path: path, throttle: .milliseconds(200))
         self.watcher = watcher
         watchTask = Task { [weak self] in
@@ -106,6 +108,7 @@ actor AgentChatTranscriptTailer {
     ///   - limit: Maximum messages per page.
     /// - Returns: The page, ascending seq.
     func history(beforeSeq: Int?, limit: Int) -> ChatHistoryPage {
+        let limit = max(1, min(limit, maxCachedMessages))
         let eligible: ArraySlice<ChatMessage>
         if let beforeSeq {
             let end = cache.firstIndex { $0.seq >= beforeSeq } ?? cache.endIndex
@@ -143,18 +146,32 @@ actor AgentChatTranscriptTailer {
     // MARK: - Reading
 
     private func loadInitialTail() {
-        guard let handle = FileHandle(forReadingAtPath: path) else { return }
-        defer { try? handle.close() }
-        // Memory-mapped read: newline scanning walks the file without
-        // copying it; only the bounded tail is decoded into strings.
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe) else {
+        guard !readsDisabled else { return }
+        let data: Data
+        do {
+            data = try AgentChatBoundedFileReader.data(atPath: path)
+        } catch AgentChatBoundedFileReadError.tooLarge {
+            // A transcript that exceeds the process-wide cap is never read;
+            // otherwise a watcher could repeatedly retry a hostile file.
+            readsDisabled = true
+            return
+        } catch {
+            // Missing files and atomic-save gaps are transient. Keep the
+            // watcher armed so the next creation/update can be observed.
             return
         }
         var lineStarts: [Int] = [0]
         data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
             for index in 0..<raw.count where raw[index] == 0x0A {
                 lineStarts.append(index + 1)
+                if lineStarts.count > AgentChatBoundedFileReader.maxTranscriptLines + 1 {
+                    break
+                }
             }
+        }
+        guard lineStarts.count <= AgentChatBoundedFileReader.maxTranscriptLines + 1 else {
+            readsDisabled = true
+            return
         }
         // A trailing partial line (no terminating newline) is carried as the
         // pending fragment; only complete lines are parsed and counted.
@@ -162,10 +179,14 @@ actor AgentChatTranscriptTailer {
         let lastCompleteEnd = lineStarts[completeLineCount]
         if lastCompleteEnd < data.count {
             pendingFragment = Data(data[lastCompleteEnd...])
+            guard pendingFragment.count <= AgentChatBoundedFileReader.maxLineBytes else {
+                readsDisabled = true
+                return
+            }
         }
         byteOffset = UInt64(data.count)
         lineCount = completeLineCount
-        fileInode = Self.inode(ofPath: path)
+        fileInode = (try? AgentChatBoundedFileReader.metadata(atPath: path))?.inode
 
         let parseStartLine = max(0, completeLineCount - maxInitialLines)
         headTruncated = parseStartLine > 0
@@ -173,6 +194,10 @@ actor AgentChatTranscriptTailer {
         lines.reserveCapacity(completeLineCount - parseStartLine)
         for lineIndex in parseStartLine..<completeLineCount {
             let range = lineStarts[lineIndex]..<(lineStarts[lineIndex + 1] - 1)
+            guard range.count <= AgentChatBoundedFileReader.maxLineBytes else {
+                readsDisabled = true
+                return
+            }
             lines.append(String(decoding: data[range], as: UTF8.self))
         }
         let outcome = parse(lines: lines, startingSeq: parseStartLine)
@@ -182,10 +207,14 @@ actor AgentChatTranscriptTailer {
     }
 
     private func drainNewContent() async {
-        guard let handle = FileHandle(forReadingAtPath: path) else { return }
-        defer { try? handle.close() }
-        let size = (try? handle.seekToEnd()) ?? 0
-        let currentInode = Self.inode(ofPath: path)
+        guard !readsDisabled,
+              let metadata = try? AgentChatBoundedFileReader.metadata(atPath: path) else { return }
+        guard metadata.size <= UInt64(AgentChatBoundedFileReader.maxTranscriptBytes) else {
+            readsDisabled = true
+            return
+        }
+        let size = metadata.size
+        let currentInode = metadata.inode
         let rotated = fileInode != nil && currentInode != nil && currentInode != fileInode
         if size < byteOffset || rotated {
             // Truncated, or atomically replaced/rotated (new inode even at
@@ -208,8 +237,11 @@ actor AgentChatTranscriptTailer {
             return
         }
         guard size > byteOffset else { return }
-        try? handle.seek(toOffset: byteOffset)
-        guard let newData = try? handle.readToEnd(), !newData.isEmpty else { return }
+        guard let newData = try? AgentChatBoundedFileReader.data(
+            atPath: path,
+            offset: byteOffset,
+            maximumBytes: AgentChatBoundedFileReader.maxIncrementalBytes
+        ), !newData.isEmpty else { return }
         byteOffset += UInt64(newData.count)
 
         var buffer = pendingFragment
@@ -217,11 +249,25 @@ actor AgentChatTranscriptTailer {
         var lines: [String] = []
         var sliceStart = buffer.startIndex
         for index in buffer.indices where buffer[index] == 0x0A {
+            guard index >= sliceStart,
+                  index - sliceStart <= AgentChatBoundedFileReader.maxLineBytes else {
+                readsDisabled = true
+                return
+            }
             lines.append(String(decoding: buffer[sliceStart..<index], as: UTF8.self))
             sliceStart = buffer.index(after: index)
         }
-        pendingFragment = Data(buffer[sliceStart...])
+        let fragment = Data(buffer[sliceStart...])
+        guard fragment.count <= AgentChatBoundedFileReader.maxLineBytes else {
+            readsDisabled = true
+            return
+        }
+        pendingFragment = fragment
         guard !lines.isEmpty else { return }
+        guard lines.count <= AgentChatBoundedFileReader.maxTranscriptLines else {
+            readsDisabled = true
+            return
+        }
 
         let startingSeq = lineCount
         lineCount += lines.count
@@ -260,16 +306,6 @@ actor AgentChatTranscriptTailer {
         case .claude, .other:
             return ClaudeTranscriptParser().parse(lines: lines, startingSeq: startingSeq, state: parseState)
         }
-    }
-
-    /// The inode of a path, or nil when it can't be stat'd. Used to spot
-    /// an atomic file replacement that size alone would miss.
-    private static func inode(ofPath path: String) -> UInt64? {
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
-              let number = attrs[.systemFileNumber] as? UInt64 else {
-            return nil
-        }
-        return number
     }
 
     private func trimCacheIfNeeded() {

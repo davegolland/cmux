@@ -135,6 +135,8 @@ struct TranscriptToolCompletion: Sendable {
     private func codexAnswers(from output: String) -> [String: [String: Any]]? {
         guard output.contains("\"answers\""),
               let data = output.data(using: .utf8),
+              data.count <= TranscriptJSONGuard.maximumLineBytes,
+              TranscriptJSONGuard.isBounded(data),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let answers = root["answers"] as? [String: Any] else { return nil }
         return answers.compactMapValues { $0 as? [String: Any] }

@@ -99,8 +99,8 @@ per workspace. Each `agents[j]`:
 | `panelId` | when bound | hosting terminal panel UUID (= `tabs[k].id`) |
 | `surfaceId` | when bound | hosting tab surface UUID (= `tabs[k].surfaceId`, accepted by `surface.focus`) |
 | `directory` | when known | session working directory |
-| `transcriptPath` | when resolved | absolute transcript JSONL path |
-| `pid` | when known | agent process id |
+| `transcriptPath` | native only | retained by cmux for future scoped transfer; omitted from authored JS |
+| `pid` | native only | retained by cmux for liveness; omitted from authored JS |
 
 Types and projection: `CustomSidebarAgentSnapshot` +
 `CustomSidebarDataContextBuilder.agentValue(_:)` in the CmuxSidebar package;
@@ -153,7 +153,8 @@ API change required for v1):
    under `UTExportedTypeDeclarations`, conforming to `public.data`, exactly
    like the existing `com.cmux.sidebar-tab-reorder` and
    `com.splittabbar.tabtransfer` precedents. Payload: JSON
-   `{ sessionId, kind, workspaceId, panelId, transcriptPath }`.
+   `{ sessionId, kind, workspaceId, panelId, transferToken }`; the token is
+   resolved by cmux and keeps the native transcript path out of authored code.
 2. Drag source. Add a `.draggable(payload)` chainable in the JS runtime
    (scene node prop, host-side `NSItemProvider` with the new UTType), applied
    by the panel to agent rows: `row.draggable({ type: "agent-session", id:
