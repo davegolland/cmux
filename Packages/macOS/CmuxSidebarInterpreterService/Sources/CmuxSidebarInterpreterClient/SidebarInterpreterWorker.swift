@@ -20,10 +20,18 @@ public func runSidebarInterpreterWorker() {
     let decoder = JSONDecoder()
     let encoder = JSONEncoder()
 
+    var invalidFrameCount = 0
     while let data = channel.receiveMessage() {
-        guard let request = try? decoder.decode(InterpreterRequest.self, from: data) else {
-            continue // skip an undecodable frame rather than tear down the worker
+        guard JSONFrameGuard.isBounded(data),
+              let request = try? decoder.decode(InterpreterRequest.self, from: data),
+              request.isWithinSecurityLimits() else {
+            invalidFrameCount += 1
+            if invalidFrameCount >= JSONFrameGuard.maximumConsecutiveInvalidFrames {
+                break
+            }
+            continue // tolerate a small amount of corruption, then fail closed
         }
+        invalidFrameCount = 0
         let response = runner.run(request)
         guard let payload = try? encoder.encode(response) else { continue }
         try? channel.sendMessage(payload)

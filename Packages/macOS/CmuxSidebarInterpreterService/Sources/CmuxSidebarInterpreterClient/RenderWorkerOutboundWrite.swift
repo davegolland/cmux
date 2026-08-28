@@ -35,7 +35,9 @@ struct RenderWorkerOutboundWrite: Sendable {
         remainingRelaunches: Int,
         ackSequence: UInt64?
     ) {
-        guard let data = try? JSONEncoder().encode(message) else { return nil }
+        guard message.isWithinSecurityLimits(),
+              let data = try? JSONEncoder().encode(message),
+              data.count <= LengthPrefixedMessageChannel.maximumFrameLength else { return nil }
         self.init(
             data: data,
             message: message,
@@ -94,6 +96,16 @@ struct RenderWorkerOutboundWrite: Sendable {
             }
             combinedEvent.deltaX += previousEvent.deltaX
             combinedEvent.deltaY += previousEvent.deltaY
+            // Repeated coalescing can otherwise amplify bounded individual
+            // wheel events into an unbounded value (or infinity) before the
+            // next process boundary sees it. If the sum leaves the pointer
+            // contract, drop the stale delta and keep the newest event.
+            guard combinedEvent.deltaX.isFinite,
+                  abs(combinedEvent.deltaX) <= 100_000,
+                  combinedEvent.deltaY.isFinite,
+                  abs(combinedEvent.deltaY) <= 100_000 else {
+                return newer
+            }
             return RenderWorkerOutboundWrite(
                 message: .pointer(combinedEvent),
                 remainingRelaunches: newer.remainingRelaunches,

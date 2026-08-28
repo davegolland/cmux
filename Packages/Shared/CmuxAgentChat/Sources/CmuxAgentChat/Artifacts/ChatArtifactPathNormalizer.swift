@@ -44,7 +44,11 @@ struct ChatArtifactPathNormalizer: Sendable {
 
     private func normalized(_ path: String, permitsRelative: Bool) -> String? {
         var trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
+        guard !trimmed.isEmpty,
+              trimmed.utf8.count <= ChatArtifactSecurityLimits.maxPathBytes,
+              !trimmed.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
+            return nil
+        }
         if trimmed.contains("://") {
             guard trimmed.hasPrefix("file://"),
                   let url = URL(string: trimmed),
@@ -91,6 +95,7 @@ struct ChatArtifactPathNormalizer: Sendable {
             }
         }
         guard !Self.isExcludedSystemPath(standardized) else { return nil }
+        guard standardized.utf8.count <= ChatArtifactSecurityLimits.maxPathBytes else { return nil }
         return standardized
     }
 

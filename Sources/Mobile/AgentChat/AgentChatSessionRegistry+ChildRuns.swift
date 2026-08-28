@@ -1,4 +1,5 @@
 import CMUXAgentLaunch
+import CmuxSwiftRenderUI
 import Foundation
 
 /// Child-run (subagent) bookkeeping from the parent session's hook events.
@@ -65,10 +66,14 @@ extension AgentChatSessionRegistry {
         label: String?,
         at date: Date
     ) {
+        let safeID = boundedText(id, maxBytes: SidebarAgentChildLimits.maxIDBytes)
+            ?? UUID().uuidString
+        let safeLabel = boundedText(label, maxBytes: SidebarAgentChildLimits.maxLabelBytes)
         // A repeated PreToolUse for the same request (retries) must not fork
         // a duplicate child.
-        if record.children.contains(where: { $0.id == id && $0.endedAt == nil }) { return }
-        record.children.append(AgentChatChildRun(id: id, label: label, startedAt: date))
+        if record.children.contains(where: { $0.id == safeID && $0.endedAt == nil }) { return }
+        record.children.append(AgentChatChildRun(id: safeID, label: safeLabel, startedAt: date))
+        prune(&record, now: date)
     }
 
     private nonisolated static func closeChild(
@@ -94,12 +99,15 @@ extension AgentChatSessionRegistry {
             return now.timeIntervalSince(endedAt) > AgentChatChildRun.settledRetention
         }
         if record.children.count > AgentChatChildRun.capacity {
-            // Drop settled children first, oldest first; running ones stay.
-            var overflow = record.children.count - AgentChatChildRun.capacity
-            record.children.removeAll { child in
-                guard overflow > 0, child.endedAt != nil else { return false }
-                overflow -= 1
-                return true
+            // Drop settled children first. If an event stream reports more
+            // running children than the bound, drop the oldest running rows
+            // too; retaining an unbounded list is a denial-of-service risk.
+            while record.children.count > AgentChatChildRun.capacity {
+                if let index = record.children.firstIndex(where: { $0.endedAt != nil }) {
+                    record.children.remove(at: index)
+                } else {
+                    record.children.removeFirst()
+                }
             }
         }
     }
@@ -108,13 +116,48 @@ extension AgentChatSessionRegistry {
     /// to `subagent_type`.
     private nonisolated static func taskLabel(from toolInputJSON: String?) -> String? {
         guard let toolInputJSON,
+              toolInputJSON.utf8.count <= 64 * 1024,
               let data = toolInputJSON.data(using: .utf8),
+              SidebarJSONGuard.isBoundedSyntax(data, maximumDepth: 64, maximumTokens: 100_000),
               let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
             return nil
         }
-        let description = (object["description"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let description, !description.isEmpty { return description }
-        let type = (object["subagent_type"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (type?.isEmpty == false) ? type : nil
+        guard SidebarJSONGuard.isBoundedObject(
+            object,
+            maximumBytes: 64 * 1024,
+            maximumCollectionItems: 2_048
+        ) else { return nil }
+        let description = boundedText(
+            object["description"] as? String,
+            maxBytes: SidebarAgentChildLimits.maxLabelBytes
+        )
+        if let description { return description }
+        return boundedText(
+            object["subagent_type"] as? String,
+            maxBytes: SidebarAgentChildLimits.maxLabelBytes
+        )
     }
+
+    private nonisolated static func boundedText(_ value: String?, maxBytes: Int) -> String? {
+        guard let value else { return nil }
+        let cleaned = String(value.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return nil }
+        guard cleaned.utf8.count > maxBytes else { return cleaned }
+
+        var result = ""
+        var used = 0
+        for scalar in cleaned.unicodeScalars {
+            let width = String(scalar).utf8.count
+            guard used + width <= maxBytes else { break }
+            result.unicodeScalars.append(scalar)
+            used += width
+        }
+        return result.isEmpty ? nil : result
+    }
+}
+
+private enum SidebarAgentChildLimits {
+    static let maxIDBytes = 128
+    static let maxLabelBytes = 512
 }

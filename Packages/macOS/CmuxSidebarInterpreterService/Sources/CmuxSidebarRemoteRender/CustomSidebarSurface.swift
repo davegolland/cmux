@@ -34,8 +34,9 @@ public struct CustomSidebarSurface: View {
     ///   - dataContext: Live, read-only values the interpreter binds.
     ///   - dispatch: Runs button/tap actions against the host command surface.
     ///   - contentInsets: Top/bottom scroll insets for the host chrome.
-    ///   - rendersInProcess: `true` (the default) mounts the in-process
-    ///     renderer; `false` mounts the out-of-process worker.
+    ///   - rendersInProcess: `true` selects the trusted in-process renderer;
+    ///     `false` mounts the out-of-process worker. The cmux app selects the
+    ///     worker by default for user-authored files.
     ///   - client: Window-owned worker client storage for the remote lane,
     ///     so provider switches reuse the live worker instead of paying a
     ///     spawn-and-handshake blank frame (see ``RemoteCustomSidebarHost``).

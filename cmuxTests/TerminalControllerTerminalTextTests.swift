@@ -34,4 +34,24 @@ final class TerminalControllerTerminalTextTests: XCTestCase {
         XCTAssertEqual(payload.base64, Data("three\nfour\nfive".utf8).base64EncodedString())
     }
 
+    func testTerminalTextPayloadRejectsOversizedNativeResult() {
+        let oversized = String(repeating: "x", count: 4 * 1024 * 1024 + 1)
+        let result = TerminalController.terminalTextPayload(
+            from: TerminalController.TerminalTextRawSnapshot(
+                viewport: oversized,
+                screen: nil,
+                history: nil,
+                active: nil
+            ),
+            includeScrollback: false,
+            lineLimit: nil
+        )
+
+        guard case .failure(let error) = result else {
+            XCTFail("oversized terminal text must be rejected")
+            return
+        }
+        XCTAssertEqual(error.message, "Terminal text exceeds the safe limit")
+    }
+
 }

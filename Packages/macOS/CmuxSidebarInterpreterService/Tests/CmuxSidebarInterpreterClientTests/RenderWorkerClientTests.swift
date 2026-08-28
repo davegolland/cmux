@@ -10,6 +10,22 @@ import Testing
 /// tokens), so the spawn → announce → ack → crash → respawn cycle is verified
 /// through a real process boundary without AppKit.
 @Suite(.serialized) struct RenderWorkerClientTests {
+    @Test func publicDeadlinesAreClampedToFiniteBounds() {
+        let excessive = Duration.seconds(1_000_000_000)
+        let belowMinimum = Duration.zero
+        let interpreter = InterpreterClient(
+            executableURL: renderFixtureURL(),
+            timeout: excessive
+        )
+        let renderer = RenderWorkerClient(
+            executableURL: renderFixtureURL(),
+            ackTimeout: belowMinimum
+        )
+        #expect(interpreter.timeout == RenderWorkerDeadline.maximum)
+        #expect(renderer.ackTimeout == RenderWorkerDeadline.minimum)
+        #expect(RenderWorkerDeadline.timeInterval(excessive) == RenderWorkerDeadline.maximumTimeInterval)
+    }
+
     @Test func announcesContextOnSpawn() async {
         let client = RenderWorkerClient(executableURL: renderFixtureURL())
         let collector = RenderEventCollector(stream: await client.subscribe())
@@ -99,7 +115,7 @@ import Testing
 
         await client.updateScene(
             filePath: "/tmp/sidebar.swift",
-            state: ["payload": .string(String(repeating: "x", count: 4 * 1024 * 1024))],
+            state: pipeFillingState(),
             topInset: 0,
             bottomInset: 0
         )
@@ -205,7 +221,7 @@ import Testing
             Task.detached {
                 await client.updateScene(
                     filePath: "/tmp/large-sidebar.swift",
-                    state: ["payload": .string(String(repeating: "x", count: 4 * 1024 * 1024))],
+                    state: pipeFillingState(),
                     topInset: 0,
                     bottomInset: 0
                 )
@@ -308,6 +324,16 @@ import Testing
             try? await Task.sleep(for: .milliseconds(50))
         }
         return false
+    }
+
+    /// Builds a large but valid context from bounded values. A single 4 MB
+    /// string is intentionally rejected by the protocol's per-value limit;
+    /// many bounded fields still fill the pipe and exercise the watchdog.
+    private func pipeFillingState() -> [String: SwiftValue] {
+        let value = String(repeating: "x", count: 13_000)
+        return Dictionary(uniqueKeysWithValues: (0..<300).map { index in
+            ("payload\(index)", .string(value))
+        })
     }
 }
 

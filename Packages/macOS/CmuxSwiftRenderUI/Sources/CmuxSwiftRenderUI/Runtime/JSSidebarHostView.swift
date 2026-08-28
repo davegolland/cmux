@@ -60,11 +60,6 @@ public struct JSSidebarHostView: View {
     }
 
     private func errorView(_ message: String) -> some View {
-        // Surface program errors on stderr for lab/debug runs, where the
-        // error view itself can't be seen.
-        if ProcessInfo.processInfo.environment["CMUX_SIDEBAR_MARQUEE_DEBUG"] == "1" {
-            FileHandle.standardError.write(Data("sidebar error: \(message)\n".utf8))
-        }
         return VStack(alignment: .leading, spacing: 6) {
             Label(
                 String(localized: "sidebar.custom.error", defaultValue: "Sidebar error", bundle: .module),
@@ -120,19 +115,30 @@ final class JSSidebarEngine {
             lastSource = source
             lastData = [:]
             let runtime = SidebarJSRuntime()
-            runtime.dispatch = dispatch
+            runtime.dispatch = restrictedDispatch(dispatch)
             self.runtime = runtime
             runtime.start(source: source)
         } else {
-            runtime?.dispatch = dispatch
+            runtime?.dispatch = restrictedDispatch(dispatch)
         }
         guard let runtime, runtime.errorMessage == nil else {
-            lastData = dataContext
             return
         }
         for (key, value) in dataContext where lastData[key] != value {
             runtime.updateData(key: key, value: value)
         }
         lastData = dataContext
+    }
+
+    /// Keep the capability check next to the JS host boundary as a defense in
+    /// depth. The app dispatch path repeats the check before it reaches the
+    /// socket, so a package host cannot accidentally widen the bridge by
+    /// injecting an unchecked sink.
+    private func restrictedDispatch(_ dispatch: SidebarActionDispatch) -> SidebarActionDispatch {
+        let policy = SidebarActionPolicy.default
+        return SidebarActionDispatch { action in
+            guard let validated = policy.validated(action) else { return }
+            dispatch.run(validated)
+        }
     }
 }

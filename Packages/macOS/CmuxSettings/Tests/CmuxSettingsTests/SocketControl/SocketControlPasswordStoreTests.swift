@@ -57,6 +57,22 @@ import Testing
         #expect(!store.verify(password: "hunter22"))
     }
 
+    @Test func rejectsOversizedPasswordMaterial() throws {
+        let url = tempFileURL()
+        let store = SocketControlPasswordStore(environment: [:], fileURL: url)
+        let oversized = String(
+            repeating: "x",
+            count: SocketControlPasswordStore.maximumPasswordUTF8Bytes + 1
+        )
+        do {
+            try store.savePassword(oversized)
+            Issue.record("Oversized password was accepted")
+        } catch let error as SocketControlPasswordStoreError {
+            #expect(error == .passwordTooLong)
+        }
+        #expect(!store.verify(password: oversized))
+    }
+
     @Test func keychainFallbackOnlyConsultedWhenAllowed() {
         let counter = Counter()
         let store = SocketControlPasswordStore(

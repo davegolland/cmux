@@ -13,6 +13,10 @@ public struct ControlResponseEncoder: Sendable {
     public static let encodeFailureResponse =
         "{\"ok\":false,\"error\":{\"code\":\"encode_error\",\"message\":\"Failed to encode JSON\"}}"
 
+    /// Maximum encoded response size. A response is sent as one line, so an
+    /// unbounded producer must not be able to retain or write arbitrary data.
+    public static let maximumResponseBytes = ControlJSONGuard.maximumBytes
+
     /// Creates an encoder.
     public init() {}
 
@@ -104,9 +108,13 @@ public struct ControlResponseEncoder: Sendable {
     ///   to `encodeFailureResponse`.
     /// - Returns: The single-line JSON string.
     public func encode(_ value: JSONValue) -> String {
+        guard ControlJSONGuard.isBounded(value) else {
+            return Self.encodeFailureResponse
+        }
         let object = value.foundationObject
         guard JSONSerialization.isValidJSONObject(object),
               let data = try? JSONSerialization.data(withJSONObject: object, options: []),
+              data.count <= Self.maximumResponseBytes,
               var string = String(data: data, encoding: .utf8) else {
             return Self.encodeFailureResponse
         }

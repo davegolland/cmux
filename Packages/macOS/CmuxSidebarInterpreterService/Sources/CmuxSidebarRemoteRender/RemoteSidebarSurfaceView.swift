@@ -28,7 +28,12 @@ final class RemoteSidebarSurfaceView: NSView {
 
     init(client: RenderWorkerClient) {
         self.client = client
-        let (stream, continuation) = AsyncStream.makeStream(of: RenderWorkerInbound.self)
+        // Mouse and scroll callbacks can outpace the worker. A bounded FIFO
+        // keeps those callbacks from retaining an unbounded event backlog;
+        // the worker's periodic scene replay restores any dropped snapshot.
+        let (stream, continuation) = AsyncStream<RenderWorkerInbound>.makeStream(
+            bufferingPolicy: .bufferingOldest(256)
+        )
         self.outbox = continuation
         super.init(frame: .zero)
         wantsLayer = true
@@ -84,6 +89,14 @@ final class RemoteSidebarSurfaceView: NSView {
                 case let .context(contextId):
                     self.adopt(contextId: contextId)
                 case let .action(action):
+                    // Treat worker output as untrusted IPC even though the
+                    // normal app dispatch adds the same policy. This keeps a
+                    // package host from accidentally wiring an unrestricted
+                    // sink around the safety boundary.
+                    // A malformed action is untrusted worker output. Drop
+                    // only that message; ending the task would make one bad
+                    // frame permanently freeze an otherwise healthy panel.
+                    guard SidebarActionPolicy.default.validated(action) != nil else { continue }
                     self.dispatch.run(action)
                 }
             }
@@ -122,18 +135,20 @@ final class RemoteSidebarSurfaceView: NSView {
         state: [String: SwiftValue],
         insets: CustomSidebarContentInsets
     ) {
-        let scene = PushedScene(filePath: filePath, state: state, insets: insets)
-        guard scene != lastPushedScene else { return }
-        lastPushedScene = scene
-        // seq is assigned by the client; 0 here is a placeholder the client
-        // overwrites via its own counter.
-        outbox.yield(.scene(RenderScene(
+        let candidate = RenderScene(
             seq: 0,
             filePath: filePath,
             state: state,
             topInset: insets.top,
             bottomInset: insets.bottom
-        )))
+        )
+        guard candidate.isWithinSecurityLimits() else { return }
+        let scene = PushedScene(filePath: filePath, state: state, insets: insets)
+        guard scene != lastPushedScene else { return }
+        lastPushedScene = scene
+        // seq is assigned by the client; 0 here is a placeholder the client
+        // overwrites via its own counter.
+        outbox.yield(.scene(candidate))
     }
 
     // MARK: - Geometry
@@ -177,11 +192,13 @@ final class RemoteSidebarSurfaceView: NSView {
     private func pushGeometry() {
         guard bounds.width > 0, bounds.height > 0 else { return }
         let scale = window?.backingScaleFactor ?? 2
-        outbox.yield(.resize(RenderSurfaceGeometry(
+        let geometry = RenderSurfaceGeometry(
             width: bounds.width,
             height: bounds.height,
             scale: scale
-        )))
+        )
+        guard geometry.isWithinSecurityLimits() else { return }
+        outbox.yield(.resize(geometry))
     }
 
     private func adopt(contextId: UInt32) {
@@ -212,23 +229,27 @@ final class RemoteSidebarSurfaceView: NSView {
 
     override func scrollWheel(with event: NSEvent) {
         let location = convert(event.locationInWindow, from: nil)
-        outbox.yield(.pointer(RenderPointerEvent(
+        let pointer = RenderPointerEvent(
             kind: .scroll,
             x: location.x,
             y: surfaceY(location),
             deltaX: event.scrollingDeltaX,
             deltaY: event.scrollingDeltaY
-        )))
+        )
+        guard pointer.isWithinSecurityLimits() else { return }
+        outbox.yield(.pointer(pointer))
     }
 
     private func forward(_ event: NSEvent, kind: RenderPointerEvent.Kind) {
         let location = convert(event.locationInWindow, from: nil)
-        outbox.yield(.pointer(RenderPointerEvent(
+        let pointer = RenderPointerEvent(
             kind: kind,
             x: location.x,
             y: surfaceY(location),
             clickCount: event.clickCount
-        )))
+        )
+        guard pointer.isWithinSecurityLimits() else { return }
+        outbox.yield(.pointer(pointer))
     }
 
     /// Worker window coordinates are bottom-left-origin points of a window

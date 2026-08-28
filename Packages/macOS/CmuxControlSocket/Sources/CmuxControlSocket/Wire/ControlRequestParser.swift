@@ -22,9 +22,11 @@ public struct ControlRequestParser: Sendable {
     /// - Returns: The decoded envelope, or `nil` when the line is not a v2
     ///   request.
     public func lenientRequest(fromLine line: String) -> ControlRequest? {
+        guard line.utf8.count <= ControlJSONGuard.maximumBytes else { return nil }
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.hasPrefix("{"),
               let data = trimmed.data(using: .utf8),
+              ControlJSONGuard.isBounded(data),
               let object = (try? JSONSerialization.jsonObject(with: data, options: [])) as? [String: Any] else {
             return nil
         }
@@ -40,8 +42,14 @@ public struct ControlRequestParser: Sendable {
     ///   dispatcher).
     /// - Returns: The decoded envelope, or the parse error to surface.
     public func request(fromLine line: String) -> Result<ControlRequest, ControlRequestParseError> {
+        guard line.utf8.count <= ControlJSONGuard.maximumBytes else {
+            return .failure(.invalidJSON)
+        }
         guard let data = line.data(using: .utf8) else {
             return .failure(.invalidUTF8)
+        }
+        guard ControlJSONGuard.isBounded(data) else {
+            return .failure(.invalidJSON)
         }
         let object: Any
         do {
@@ -76,8 +84,15 @@ public struct ControlRequestParser: Sendable {
         }
         let method = (dictionary["method"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard method.utf8.count <= ControlJSONGuard.maximumMethodBytes else { return nil }
         var params: [String: JSONValue] = [:]
         if let rawParams = dictionary["params"] as? [String: Any] {
+            guard rawParams.count <= ControlJSONGuard.maximumParameterCount,
+                  rawParams.keys.allSatisfy({
+                      !$0.isEmpty
+                          && $0.utf8.count <= ControlJSONGuard.maximumParameterKeyBytes
+                          && !$0.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })
+                  }) else { return nil }
             guard let bridged = JSONValue(foundationObject: rawParams),
                   case .object(let values) = bridged else { return nil }
             params = values

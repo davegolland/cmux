@@ -22,6 +22,11 @@ import CMUXMobileCore
 import IOSurface
 import UniformTypeIdentifiers
 
+/// Maximum bytes copied from a libghostty text result. The C API reports a
+/// `uintptr_t` length, so the Swift conversion must be checked before any
+/// allocation.
+private let ghosttyTerminalMaximumReadTextBytes = 4 * 1024 * 1024
+
 enum GhosttyStartupAppearancePreviewProfile: String, CaseIterable, Identifiable {
     case realUserConfig
     case freshInstall
@@ -5745,15 +5750,28 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         defer { ghostty_surface_free_text(surface, &text) }
 
         let selected: String
-        if let ptr = text.text, text.text_len > 0 {
-            let selectedData = Data(bytes: ptr, count: Int(text.text_len))
-            selected = String(decoding: selectedData, as: UTF8.self)
-        } else {
+        if text.text_len == 0 {
             selected = ""
+        } else {
+            guard let ptr = text.text,
+                  let byteCount = Int(exactly: text.text_len),
+                  byteCount <= ghosttyTerminalMaximumReadTextBytes else {
+                return nil
+            }
+            let selectedData = Data(bytes: ptr, count: byteCount)
+            selected = String(decoding: selectedData, as: UTF8.self)
+        }
+
+        guard let offsetStart = Int(exactly: text.offset_start),
+              let offsetLength = Int(exactly: text.offset_len),
+              offsetStart >= 0,
+              offsetLength >= 0,
+              offsetStart <= Int.max - offsetLength else {
+            return nil
         }
 
         return SelectionSnapshot(
-            range: NSRange(location: Int(text.offset_start), length: Int(text.offset_len)),
+            range: NSRange(location: offsetStart, length: offsetLength),
             string: selected,
             topLeft: CGPoint(x: text.tl_px_x, y: text.tl_px_y)
         )
@@ -7170,8 +7188,11 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         if ghostty_surface_quicklook_word(surface, &text) {
             defer { ghostty_surface_free_text(surface, &text) }
             var quicklookResolution: WordPathResolution?
-            if text.text_len > 0, let ptr = text.text {
-                let wordData = Data(bytes: ptr, count: Int(text.text_len))
+            if let byteCount = Int(exactly: text.text_len),
+               text.text_len > 0,
+               byteCount <= ghosttyTerminalMaximumReadTextBytes,
+               let ptr = text.text {
+                let wordData = Data(bytes: ptr, count: byteCount)
                 if let decodedWord = String(bytes: wordData, encoding: .utf8) {
 #if DEBUG
                     let resolvedQuicklookWord = cmuxTerminalCmdClickQuicklookOverride(decodedWord)

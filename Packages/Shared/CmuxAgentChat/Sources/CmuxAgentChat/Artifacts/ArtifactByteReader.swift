@@ -10,7 +10,23 @@ import UniformTypeIdentifiers
 public struct ArtifactByteReader: Sendable {
     /// Maximum immediate children returned by one directory-list request.
     public static let maximumDirectoryEntryCount = 500
+    /// Maximum bytes returned by one fetch request, even when this type is
+    /// called directly instead of through an RPC handler.
+    public static let maximumFetchBytes = ChatArtifactTransferPolicy.defaultPolicy.maxRawChunkBytes
+    /// Maximum compressed bytes read into memory while creating one thumbnail.
+    public static let maximumThumbnailInputBytes = 64 * 1024 * 1024
+    /// Maximum requested thumbnail dimension accepted by the decoder.
+    public static let maximumThumbnailDimension = 4_096
+    /// Maximum source image dimension inspected before ImageIO decodes a
+    /// thumbnail. Compressed images can be small while declaring a very large
+    /// pixel surface, so the compressed-byte limit alone is not sufficient.
+    public static let maximumThumbnailSourceDimension = 32_768
+    /// Maximum source pixels inspected before thumbnail decoding. This keeps
+    /// decompression-bomb images from allocating an oversized intermediate
+    /// surface even when both individual dimensions look reasonable.
+    public static let maximumThumbnailSourcePixels = 64 * 1024 * 1024
     private static let utf8SniffByteCount = 8 * 1024
+    private static let ioChunkBytes = 64 * 1024
 
     /// Filesystem/decoder failures surfaced by artifact RPC handlers.
     public enum Error: Swift.Error, Sendable, Equatable {
@@ -37,8 +53,27 @@ public struct ArtifactByteReader: Sendable {
 
     /// Reads metadata for an already-authorized path.
     public func stat(path: String) throws -> ChatArtifactStat {
-        let attributes = try attributes(path: path)
-        return stat(path: path, attributes: attributes)
+        let metadata = try lstat(path: path)
+        let mode = metadata.st_mode & mode_t(S_IFMT)
+        let isDirectory = mode == mode_t(S_IFDIR)
+        let isRegularFile = mode == mode_t(S_IFREG)
+        guard metadata.st_size >= 0 else { throw Error.readFailed }
+        let modifiedAt = Date(
+            timeIntervalSince1970: TimeInterval(metadata.st_mtimespec.tv_sec)
+                + TimeInterval(metadata.st_mtimespec.tv_nsec) / 1_000_000_000
+        )
+        return ChatArtifactStat(
+            exists: true,
+            isDirectory: isDirectory,
+            size: Int64(metadata.st_size),
+            modifiedAt: modifiedAt,
+            kind: kind(
+                path: path,
+                isDirectory: isDirectory,
+                isRegularFile: isRegularFile
+            ),
+            mimeType: mimeType(path: path, isDirectory: isDirectory)
+        )
     }
 
     /// Reads one clamped byte chunk for an already-authorized file path.
@@ -48,61 +83,64 @@ public struct ArtifactByteReader: Sendable {
         defer { try? handle.close() }
         let totalSize = opened.size
         let clampedOffset = min(max(offset, 0), totalSize)
+        let safeLength = min(max(length, 0), Self.maximumFetchBytes)
+        // Bound the descriptor read to the size observed with the verified
+        // descriptor. Without this clamp, a file that grows after `open` can
+        // make one fetch return bytes beyond the authorized snapshot and can
+        // turn a nominally bounded range into an unbounded growth race.
+        let remaining = totalSize - clampedOffset
+        let requestedLength = Int64(safeLength)
+        let readLength = Int(min(requestedLength, remaining))
         let data: Data
         do {
             try handle.seek(toOffset: UInt64(clampedOffset))
-            data = try handle.read(upToCount: max(0, length)) ?? Data()
+            data = try handle.read(upToCount: readLength) ?? Data()
         } catch {
             throw filesystemError(error)
         }
-        let endOffset = clampedOffset + Int64(data.count)
+        // Compute EOF from the remaining range. A sparse file can report a
+        // size near Int64.max, so adding the byte count directly could trap
+        // on integer overflow for a valid, authorized path.
+        let reachedEOF = data.count < readLength || Int64(data.count) >= remaining
         return ChatArtifactChunk(
             data: data,
             offset: clampedOffset,
             totalSize: totalSize,
-            eof: endOffset >= totalSize
-        )
-    }
-
-    private func stat(
-        path: String,
-        attributes: [FileAttributeKey: Any]
-    ) -> ChatArtifactStat {
-        let fileType = attributes[.type] as? FileAttributeType
-        let isDirectory = fileType == .typeDirectory
-        let size = (attributes[.size] as? NSNumber)?.int64Value ?? 0
-        let modifiedAt = attributes[.modificationDate] as? Date ?? Date(timeIntervalSince1970: 0)
-        let kind = kind(
-            path: path,
-            isDirectory: isDirectory,
-            isRegularFile: fileType == .typeRegular
-        )
-        return ChatArtifactStat(
-            exists: true,
-            isDirectory: isDirectory,
-            size: size,
-            modifiedAt: modifiedAt,
-            kind: kind,
-            mimeType: mimeType(path: path, isDirectory: isDirectory)
+            eof: reachedEOF
         )
     }
 
     /// Generates a JPEG thumbnail for an already-authorized image path.
     public func thumbnail(path: String, maxDimension: Int) throws -> ChatArtifactThumbnail {
         let opened = try openVerifiedRegularFile(path: path)
-        try? opened.handle.close()
-        guard kind(path: path, isDirectory: false) == .image else {
+        let handle = opened.handle
+        defer { try? handle.close() }
+        guard opened.size <= Int64(Self.maximumThumbnailInputBytes) else {
+            throw Error.readFailed
+        }
+        let fileExtension = URL(fileURLWithPath: path).pathExtension
+        guard let type = UTType(filenameExtension: fileExtension),
+              type.conforms(to: .image) else {
             throw Error.unsupportedMedia
         }
-        let url = URL(fileURLWithPath: path)
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
-            _ = try attributes(path: path)
+        let input = try readAll(
+            handle: handle,
+            expectedSize: opened.size,
+            maximumBytes: Self.maximumThumbnailInputBytes
+        )
+        guard let source = CGImageSourceCreateWithData(input as CFData, nil) else {
             throw Error.corruptMedia
         }
+        guard sourceDimensionsAreBounded(source) else {
+            throw Error.corruptMedia
+        }
+        let dimension = min(max(maxDimension, 1), Self.maximumThumbnailDimension)
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxDimension,
+            kCGImageSourceThumbnailMaxPixelSize: dimension,
             kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCache: false,
+            kCGImageSourceShouldCacheImmediately: false,
         ]
         guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
             throw Error.corruptMedia
@@ -129,6 +167,28 @@ public struct ArtifactByteReader: Sendable {
         )
     }
 
+    /// Checks image metadata before asking ImageIO to materialise pixels. Some
+    /// formats do not expose dimensions until decode, so missing metadata is
+    /// left to ImageIO; a partially present or invalid pair fails closed.
+    private func sourceDimensionsAreBounded(_ source: CGImageSource) -> Bool {
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
+                as? [CFString: Any] else {
+            return true
+        }
+        let width = properties[kCGImagePropertyPixelWidth] as? Int
+        let height = properties[kCGImagePropertyPixelHeight] as? Int
+        guard width != nil || height != nil else { return true }
+        guard let width, let height,
+              width > 0,
+              height > 0,
+              width <= Self.maximumThumbnailSourceDimension,
+              height <= Self.maximumThumbnailSourceDimension,
+              width <= Self.maximumThumbnailSourcePixels / height else {
+            return false
+        }
+        return true
+    }
+
     /// Lists up to ``maximumDirectoryEntryCount`` immediate children for an
     /// already-authorized directory.
     ///
@@ -137,11 +197,23 @@ public struct ArtifactByteReader: Sendable {
     public func list(path: String) throws -> ChatArtifactDirectoryListing {
         let stat = try stat(path: path)
         guard stat.isDirectory else { throw Error.notDirectory }
-        let names: [String]
-        do {
-            names = try FileManager.default.contentsOfDirectory(atPath: path)
-        } catch {
-            throw filesystemError(error)
+        // Read only one entry beyond the response cap. The old
+        // contentsOfDirectory call materialized an unbounded name array for a
+        // directory controlled by the terminal, which made a large directory
+        // a simple memory-exhaustion input.
+        guard let enumerator = FileManager.default.enumerator(atPath: path) else {
+            throw Error.readFailed
+        }
+        var names: [String] = []
+        names.reserveCapacity(Self.maximumDirectoryEntryCount + 1)
+        while let name = enumerator.nextObject() as? String {
+            // This is an immediate-child listing. Never descend into a child
+            // directory, including a directory reached through a symlink.
+            enumerator.skipDescendants()
+            names.append(name)
+            if names.count > Self.maximumDirectoryEntryCount {
+                break
+            }
         }
         let sortedNames = names.sorted {
             $0.localizedStandardCompare($1) == .orderedAscending
@@ -152,13 +224,20 @@ public struct ArtifactByteReader: Sendable {
         for name in sortedNames.prefix(Self.maximumDirectoryEntryCount) {
             do {
                 let entry = directoryURL.appendingPathComponent(name)
-                let values = try entry.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey])
-                let isDirectory = values.isDirectory ?? false
+                let metadata = try lstat(path: entry.path)
+                let mode = metadata.st_mode & mode_t(S_IFMT)
+                let isDirectory = mode == mode_t(S_IFDIR)
+                let isRegularFile = mode == mode_t(S_IFREG)
+                guard metadata.st_size >= 0 else { continue }
                 listed.append(ChatArtifactDirectoryEntry(
                     name: name,
                     isDirectory: isDirectory,
-                    size: Int64(values.fileSize ?? 0),
-                    kind: kind(path: entry.path, isDirectory: isDirectory)
+                    size: Int64(metadata.st_size),
+                    kind: kind(
+                        path: entry.path,
+                        isDirectory: isDirectory,
+                        isRegularFile: isRegularFile
+                    )
                 ))
             } catch {
                 let failure = filesystemError(error)
@@ -189,6 +268,10 @@ public struct ArtifactByteReader: Sendable {
         isRegularFile: Bool?
     ) -> ChatArtifactKind {
         if isDirectory { return .directory }
+        // A symlink or other special file must never inherit a preview type
+        // from its extension. Callers that have not already inspected the
+        // path may leave this nil, so missing paths retain their old
+        // extension-derived kind for UI metadata.
         if isRegularFile == false { return .binary }
         let fileExtension = URL(fileURLWithPath: path).pathExtension
         let type = fileExtension.isEmpty ? nil : UTType(filenameExtension: fileExtension)
@@ -197,8 +280,10 @@ public struct ArtifactByteReader: Sendable {
             if let isRegularFile {
                 verifiedRegularFile = isRegularFile
             } else {
-                let attributes = try? attributes(path: path)
-                verifiedRegularFile = (attributes?[.type] as? FileAttributeType) == .typeRegular
+                let metadata = try? lstat(path: path)
+                verifiedRegularFile = metadata.map {
+                    ($0.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG)
+                } ?? false
             }
             guard verifiedRegularFile else { return .binary }
             return isUTF8Text(path: path) ? .text : .binary
@@ -254,7 +339,7 @@ public struct ArtifactByteReader: Sendable {
     /// Opens `path` without blocking and validates the opened descriptor as a regular file.
     func openVerifiedRegularFile(path: String) throws -> (handle: FileHandle, size: Int64) {
         // Set close-on-exec atomically at open; fcntl afterward cannot close the fork race.
-        let descriptor = Darwin.open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
+        let descriptor = Darwin.open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW)
         guard descriptor >= 0 else { throw filesystemError(errno: Darwin.errno) }
 
         var metadata = Darwin.stat()
@@ -263,7 +348,8 @@ public struct ArtifactByteReader: Sendable {
             Darwin.close(descriptor)
             throw filesystemError(errno: errorCode)
         }
-        guard (metadata.st_mode & S_IFMT) == S_IFREG else {
+        guard (metadata.st_mode & S_IFMT) == S_IFREG,
+              metadata.st_size >= 0 else {
             Darwin.close(descriptor)
             throw Error.notRegularFile
         }
@@ -278,8 +364,52 @@ public struct ArtifactByteReader: Sendable {
 
         return (
             FileHandle(fileDescriptor: descriptor, closeOnDealloc: true),
-            max(Int64(metadata.st_size), 0)
+            Int64(metadata.st_size)
         )
+    }
+
+    /// Reads a complete, bounded file through the already-verified descriptor.
+    /// The final descriptor stat rejects a growth or truncation race before
+    /// the bytes reach ImageIO.
+    private func readAll(
+        handle: FileHandle,
+        expectedSize: Int64,
+        maximumBytes: Int
+    ) throws -> Data {
+        guard expectedSize >= 0,
+              expectedSize <= Int64(maximumBytes),
+              expectedSize <= Int64(Int.max) else {
+            throw Error.readFailed
+        }
+        let byteCount = Int(expectedSize)
+        var result = Data()
+        result.reserveCapacity(byteCount)
+        while result.count < byteCount {
+            let amount = min(Self.ioChunkBytes, byteCount - result.count)
+            let chunk: Data
+            do {
+                chunk = try handle.read(upToCount: amount) ?? Data()
+            } catch {
+                throw filesystemError(error)
+            }
+            guard !chunk.isEmpty else { throw Error.readFailed }
+            result.append(chunk)
+        }
+        var metadata = Darwin.stat()
+        guard Darwin.fstat(handle.fileDescriptor, &metadata) == 0,
+              (metadata.st_mode & S_IFMT) == mode_t(S_IFREG),
+              metadata.st_size == off_t(expectedSize) else {
+            throw Error.readFailed
+        }
+        return result
+    }
+
+    private func lstat(path: String) throws -> Darwin.stat {
+        var metadata = Darwin.stat()
+        guard Darwin.lstat(path, &metadata) == 0 else {
+            throw filesystemError(errno: Darwin.errno)
+        }
+        return metadata
     }
 
     private func utf8ScalarLength(leadingByte: UInt8) -> Int? {
@@ -313,14 +443,6 @@ public struct ArtifactByteReader: Sendable {
             return firstContinuation <= 0x8F
         default:
             return true
-        }
-    }
-
-    private func attributes(path: String) throws -> [FileAttributeKey: Any] {
-        do {
-            return try FileManager.default.attributesOfItem(atPath: path)
-        } catch {
-            throw filesystemError(error)
         }
     }
 

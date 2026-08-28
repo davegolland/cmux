@@ -13,4 +13,20 @@ struct ChatArtifactTransferPolicyTests {
         #expect(policy.estimatedEnvelopeByteCount(rawByteCount: policy.maxRawChunkBytes) < policy.mobileSyncFrameLimitBytes)
         #expect(policy.clampedChunkLength(10 * 1024 * 1024) == policy.maxRawChunkBytes)
     }
+
+    @Test("custom policies cannot bypass hard transfer ceilings")
+    func hostilePolicyValuesAreClamped() {
+        let policy = ChatArtifactTransferPolicy(
+            maxRawChunkBytes: .max,
+            mobileSyncFrameLimitBytes: .max,
+            maxPreviewBytes: .max,
+            maxMediaPreviewBytes: .max
+        )
+
+        #expect(policy.maxRawChunkBytes == ChatArtifactTransferPolicy.maximumRawChunkBytes)
+        #expect(policy.mobileSyncFrameLimitBytes == ChatArtifactTransferPolicy.maximumMobileSyncFrameLimitBytes)
+        #expect(policy.maxPreviewBytes == ChatArtifactTransferPolicy.maximumPreviewBytes)
+        #expect(policy.maxMediaPreviewBytes == ChatArtifactTransferPolicy.maximumMediaPreviewBytes)
+        #expect(policy.estimatedEnvelopeByteCount(rawByteCount: .max) < Int.max)
+    }
 }

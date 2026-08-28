@@ -54,7 +54,13 @@ func dslColor(_ token: String?) -> Color? {
 
 /// Resolves a font token (or explicit size) to a magnification-aware font spec.
 func dslFontSpec(named token: String?, size: Double?, weight: Font.Weight? = nil, design: Font.Design = .default) -> DSLFontSpec? {
-    if let size { return DSLFontSpec(baseSize: CGFloat(size), weight: weight, design: design) }
+    if let size {
+        // Font initializers are not a safe place to pass attacker-controlled
+        // NaN, infinity, or a negative/absurd point size. Treat an invalid
+        // explicit size as an unresolved token and use the caller's fallback.
+        guard size.isFinite, size > 0, size <= 256 else { return nil }
+        return DSLFontSpec(baseSize: CGFloat(size), weight: weight, design: design)
+    }
     guard let token else { return nil }
     switch token.lowercased() {
     case "largetitle": return DSLFontSpec(baseSize: 26, weight: weight, design: design)

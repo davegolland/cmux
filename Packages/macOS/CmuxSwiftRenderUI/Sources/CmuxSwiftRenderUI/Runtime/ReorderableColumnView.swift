@@ -1,5 +1,14 @@
 import Observation
+import OSLog
 import SwiftUI
+
+private let reorderableSidebarLogger = Logger(subsystem: "com.cmuxterm.app", category: "SidebarReorder")
+
+private func reorderNonnegative(_ value: Double?, maximum: Double = 10_000) -> CGFloat {
+    guard let value, value.isFinite, value >= 0, value <= maximum else { return 0 }
+    let result = CGFloat(value)
+    return result.isFinite ? result : 0
+}
 
 /// Per-drag state for ``ReorderableColumnView``, `@Observable` so invalidation
 /// is exactly as fine-grained as the reads:
@@ -82,7 +91,8 @@ struct ReorderableColumnView: View {
 
     private static func debugLog(_ message: @autoclosure () -> String) {
         guard debugEnabled else { return }
-        FileHandle.standardError.write(Data("reorder: \(message())\n".utf8))
+        let value = message()
+        reorderableSidebarLogger.debug("reorder: \(value, privacy: .private)")
     }
 
     private static let gapSpring = Animation.spring(response: 0.25, dampingFraction: 0.78)
@@ -95,7 +105,7 @@ struct ReorderableColumnView: View {
     /// Inter-row spacing (the `spacing` option of `Reorderable`), also fed
     /// into the geometry so slot math matches the layout.
     private var rowSpacing: CGFloat {
-        CGFloat(node.double("spacing") ?? 0)
+        reorderNonnegative(node.double("spacing"))
     }
 
     var body: some View {
@@ -425,7 +435,7 @@ struct ReorderableColumnView: View {
     /// A row's nesting indent: its outer leading margin. (paddingLeading is
     /// content inset inside a full-width box and does not define nesting.)
     private func rowIndent(_ id: String) -> CGFloat {
-        CGFloat(store?.node(id)?.double("marginLeading") ?? 0)
+        reorderNonnegative(store?.node(id)?.double("marginLeading"))
     }
 
     /// The item key for a row, from the `itemKeys` JSON array prop the JS
@@ -436,6 +446,8 @@ struct ReorderableColumnView: View {
         guard let json = node.string("itemKeys"),
               let data = json.data(using: .utf8),
               let keys = try? JSONDecoder().decode([String].self, from: data),
+              keys.count <= SidebarSecurityLimits.maxSceneChildren,
+              keys.allSatisfy({ $0.utf8.count <= SidebarSecurityLimits.maxIdentifierBytes }),
               rows.count == keys.count,
               let authoritativeIndex = rows.firstIndex(of: childId) else {
             return childId
@@ -452,9 +464,22 @@ struct ReorderableColumnView: View {
 /// main thread.)
 @MainActor
 final class RowHeightsBox {
+    private static let maxEntries = SidebarSecurityLimits.maxSceneNodes
     private var heights: [String: CGFloat] = [:]
 
     func record(_ id: String, _ height: CGFloat) {
+        guard !id.isEmpty,
+              id.utf8.count <= SidebarSecurityLimits.maxIdentifierBytes,
+              !id.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
+              height.isFinite,
+              height >= 0,
+              height <= CGFloat(SidebarSecurityLimits.maxSurfaceDimension) else {
+            return
+        }
+        if heights[id] == nil, heights.count >= Self.maxEntries,
+           let oldest = heights.keys.first {
+            heights.removeValue(forKey: oldest)
+        }
         heights[id] = height
     }
 
@@ -496,11 +521,11 @@ private struct ReorderableRowView: View {
                 // and flash).
                 if moves, let fill = dslColor(store?.node(childId)?.string("dragBackground")) {
                     RoundedRectangle(
-                        cornerRadius: CGFloat(store?.node(childId)?.double("cornerRadius") ?? 8),
+                        cornerRadius: reorderNonnegative(store?.node(childId)?.double("cornerRadius"), maximum: 1_000),
                         style: .continuous
                     )
                     .fill(fill)
-                    .padding(.leading, CGFloat(store?.node(childId)?.double("marginLeading") ?? 0))
+                    .padding(.leading, reorderNonnegative(store?.node(childId)?.double("marginLeading")))
                 }
             }
             // Nesting preview: a leading-PADDING delta, not a translation, so
@@ -545,7 +570,7 @@ private struct ReorderableRowView: View {
             projected = nil
         }
         guard let projected, let node = store?.node(childId) else { return 0 }
-        return projected - CGFloat(node.double("marginLeading") ?? 0)
+        return projected - reorderNonnegative(node.double("marginLeading"))
     }
 
     private func yOffset(moves: Bool, dragging: Bool) -> CGFloat {

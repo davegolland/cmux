@@ -77,8 +77,13 @@ interpreted sidebar (.swift)
 - **Wave A — Full read surface (fully data-driven).** Replace the 4-key `customSidebarDataContext` with the `DataContextProvider` projecting all query payloads + the rich `Workspace` model fields. Additive, low-risk. Personas immediately populate with real data. Includes surfacing the current gaps (agent state, shell activity, per-surface ports) as new fields.
 - **Wave B — Events/hooks reactive.** EventBridge subscribes to the whole bus; expose `events.*` + agent-hook state; event-driven re-render. Surface every event name/category.
 - **Wave C — State engine + reactivity + input controls.** SwiftUI-surface roadmap Phase 2: a host-owned `@State`/`$binding` engine. Unlocks TextField/Toggle/Picker/Slider, write-actions beyond `cmux()`, and author `on(event){…}` handlers. The largest lift; gates ~interactivity.
-- **Wave D — Command catalog + capability scoping + typed params.** Generate the full `cmux capabilities` catalog into authoring docs and a Swift interpreter knowledge reference; add capability scoping (default-deny dangerous namespaces for untrusted sidebars); robust param coercion. Security gate for "all commands exposed."
+- **Wave D — Command catalog + capability scoping + typed params.** Generate the full `cmux capabilities` catalog into authoring docs and a Swift interpreter knowledge reference; add capability scoping (default-deny dangerous namespaces for untrusted sidebars); robust param coercion. Security gate for "all commands exposed." The current custom-sidebar host now uses an explicit default-safe method set and denies sensitive namespaces; a future trusted-sidebar manifest can widen it.
 - **Interleave — leaf SwiftUI views/modifiers** from `docs/swiftui-interpreter-surface.md` Phase 1 (List/Section/LazyVStack/Grid/Label/ProgressView/gradients/overlay-background/styles) so the richer data has richer views to render into.
 
-## Open decision: scope of "all commands / all hooks" for authored sidebars
-Exposing all 248 methods to any `.swift` file a user or in-pane agent drops in includes destructive/sensitive ones (`auth.sign_out`, `browser.eval`, `vm.rm`, `workspace.close`). Options: (1) expose everything (trust local author); (2) default-safe allowlist with an opt-in "trusted" flag per file/dir; (3) capability manifest each sidebar declares. This must be decided before Wave D ships.
+## Command-scope decision
+Exposing all 248 methods to any authored sidebar includes destructive and
+sensitive commands (`auth.sign_out`, `browser.eval`, `vm.rm`, and terminal
+input). The shipped default is a safe allowlist for workspace, pane, surface,
+and window controls, with explicit parameter and URL limits. A future trusted
+sidebar manifest may widen the set after a separate permission design; no
+implicit trust is granted by placing a file in the sidebar directory.

@@ -1,6 +1,17 @@
 import CmuxFoundation
 import SwiftUI
 
+private enum DSLRenderLimits {
+    static let maxDimension = 10_000.0
+}
+
+private func dslDimension(_ value: Double?, nonnegative: Bool = true) -> CGFloat? {
+    guard let value, value.isFinite, abs(value) <= DSLRenderLimits.maxDimension,
+          !nonnegative || value >= 0 else { return nil }
+    let result = CGFloat(value)
+    return result.isFinite ? result : nil
+}
+
 /// Renders a declarative JSON ``DSLNode`` tree as native SwiftUI.
 ///
 /// `onAction` is invoked when an interactive node fires. The JSON format is
@@ -17,11 +28,11 @@ struct DSLSidebarRenderer: View {
     private var content: some View {
         switch node.type {
         case .vstack:
-            VStack(alignment: dslHAlignment(node.alignment), spacing: node.spacing.map { CGFloat($0) }) {
+            VStack(alignment: dslHAlignment(node.alignment), spacing: dslDimension(node.spacing)) {
                 childViews
             }
         case .hstack:
-            HStack(alignment: dslVAlignment(node.alignment), spacing: node.spacing.map { CGFloat($0) }) {
+            HStack(alignment: dslVAlignment(node.alignment), spacing: dslDimension(node.spacing)) {
                 childViews
             }
         case .zstack:
@@ -39,7 +50,7 @@ struct DSLSidebarRenderer: View {
             Image(systemName: node.systemName ?? "questionmark.square.dashed")
                 .modifier(OptionalDSLFont(spec: resolvedFontSpec))
         case .spacer:
-            Spacer(minLength: node.size.map { CGFloat($0) })
+            Spacer(minLength: dslDimension(node.size))
         case .divider:
             Divider()
         }
@@ -60,7 +71,7 @@ struct DSLSidebarRenderer: View {
     private func styled(_ view: some View) -> some View {
         view
             .modifier(OptionalForeground(color: dslColor(node.color)))
-            .modifier(OptionalPadding(padding: node.padding.map { CGFloat($0) }))
+            .modifier(OptionalPadding(padding: dslDimension(node.padding)))
             .modifier(OptionalBackground(color: dslColor(node.background)))
     }
 }

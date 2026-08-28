@@ -30,6 +30,16 @@ internal import Foundation
 ///   before UTF-8 decoding, including invalid lines and line delimiters, and
 ///   the absolute deadline is checked before buffered lines are returned.
 public final class ControlClientLineReader {
+    /// Absolute cap for bytes retained while waiting for a newline. This
+    /// matches the v2 parser cap and also protects callers that use the
+    /// blocking reader without preauthorization limits.
+    public static let maximumBufferedBytes = 8 * 1024 * 1024
+
+    /// Maximum temporary read buffer accepted from a caller. A small buffer
+    /// still preserves the legacy framing behavior, while an untrusted or
+    /// accidental huge value cannot force an unbounded allocation.
+    private static let maximumReadBufferBytes = 64 * 1024
+
     private let socket: Int32
     private var buffer: [UInt8]
     private var pendingBytes: [UInt8] = []
@@ -62,7 +72,8 @@ public final class ControlClientLineReader {
         monotonicNowNanoseconds: (@Sendable () -> UInt64)? = nil
     ) {
         self.socket = socket
-        self.buffer = [UInt8](repeating: 0, count: bufferSize)
+        let safeBufferSize = min(max(2, bufferSize), Self.maximumReadBufferBytes)
+        self.buffer = [UInt8](repeating: 0, count: safeBufferSize)
         self.authorizationRevocationSignal = authorizationRevocationSignal
         var readinessPollDescriptors = [
             pollfd(fd: socket, events: Int16(POLLIN), revents: 0)
@@ -139,7 +150,9 @@ public final class ControlClientLineReader {
             guard waitForReadReadinessBeforeDeadline(
                 shouldContinueReading: shouldContinueReading
             ) else { return nil }
-            let bytesRead = read(socket, &buffer, buffer.count - 1)
+            let bytesRead = buffer.withUnsafeMutableBytes { rawBuffer in
+                read(socket, rawBuffer.baseAddress, rawBuffer.count - 1)
+            }
             guard bytesRead > 0 else { return nil }
             resetIdleReadDeadline()
 
@@ -150,6 +163,9 @@ public final class ControlClientLineReader {
             }
 
             pendingBytes.append(contentsOf: buffer[0..<bytesRead])
+            guard pendingBytes.count - pendingStartIndex <= Self.maximumBufferedBytes else {
+                return nil
+            }
         }
     }
 
@@ -206,7 +222,14 @@ public final class ControlClientLineReader {
                    readinessPollDescriptors[1].revents != 0 {
                     return false
                 }
-                return readinessPollDescriptors[0].revents & Int16(POLLIN | POLLHUP) != 0
+                let events = readinessPollDescriptors[0].revents
+                // POLLERR and POLLNVAL are terminal. Treating them as a
+                // non-ready descriptor can otherwise spin until the timeout
+                // while no read can ever succeed.
+                if events & Int16(POLLERR | POLLNVAL) != 0 {
+                    return false
+                }
+                return events & Int16(POLLIN | POLLHUP) != 0
             }
             if result == 0 { continue }
             guard errno == EINTR else { return false }

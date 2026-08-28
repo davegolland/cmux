@@ -63,24 +63,20 @@ public struct SocketTransport: Sendable {
 
     /// Builds a `sockaddr_un` for `path`, or nil when the path does not fit.
     func unixSocketAddress(path: String) -> sockaddr_un? {
+        guard !path.isEmpty, !path.utf8.contains(0) else { return nil }
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
 
         let maxLength = Self.unixSocketPathMaxLength + 1
-        var didFit = false
-        path.withCString { source in
-            let sourceLength = strlen(source)
-            guard sourceLength < maxLength else { return }
+        let pathBytes = Array(path.utf8)
+        guard pathBytes.count < maxLength else { return nil }
 
-            _ = withUnsafeMutableBytes(of: &addr.sun_path) { buffer in
-                buffer.initializeMemory(as: UInt8.self, repeating: 0)
+        withUnsafeMutableBytes(of: &addr.sun_path) { buffer in
+            buffer.initializeMemory(as: UInt8.self, repeating: 0)
+            for (index, byte) in pathBytes.enumerated() {
+                buffer[index] = byte
             }
-            withUnsafeMutablePointer(to: &addr.sun_path) { pathPtr in
-                let destination = UnsafeMutableRawPointer(pathPtr).assumingMemoryBound(to: CChar.self)
-                strncpy(destination, source, maxLength - 1)
-            }
-            didFit = true
         }
-        return didFit ? addr : nil
+        return addr
     }
 }
