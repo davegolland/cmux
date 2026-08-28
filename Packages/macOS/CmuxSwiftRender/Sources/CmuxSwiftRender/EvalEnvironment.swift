@@ -47,7 +47,15 @@ public final class EvalEnvironment {
     /// Looks up `name`, walking up the scope chain, then asking the root's
     /// external resolver.
     public func lookup(_ name: String) -> SwiftValue? {
-        values[name] ?? (parent?.lookup(name) ?? externalResolver?(name))
+        // Do not recurse through authored-scope depth. A sidebar can create a
+        // long chain with nested branches or helper calls, and lookup itself
+        // must not turn that chain into native-stack growth.
+        var scope: EvalEnvironment? = self
+        while let current = scope {
+            if let value = current.values[name] { return value }
+            scope = current.parent
+        }
+        return externalResolver?(name)
     }
 
     /// Defines or overwrites `name` in this scope.
@@ -62,7 +70,12 @@ public final class EvalEnvironment {
 
     /// Looks up a user-defined function by name, walking up the scope chain.
     public func lookupFunction(_ name: String) -> FunctionDeclSyntax? {
-        functions[name] ?? parent?.lookupFunction(name)
+        var scope: EvalEnvironment? = self
+        while let current = scope {
+            if let function = current.functions[name] { return function }
+            scope = current.parent
+        }
+        return nil
     }
 
     /// A fresh child scope for a loop body, `if` branch, or closure.

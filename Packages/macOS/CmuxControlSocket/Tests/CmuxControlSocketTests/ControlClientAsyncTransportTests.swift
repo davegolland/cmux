@@ -82,4 +82,22 @@ struct ControlClientAsyncTransportTests {
         #expect(count == payload.count)
         #expect(Data(bytes) == payload)
     }
+
+    @Test func asyncWriterTimesOutWhenPeerStopsReading() async throws {
+        let pair = try UnixSocketFixture.makeSocketPair()
+        defer {
+            close(pair.reader)
+            close(pair.writer)
+        }
+
+        let writer = ControlClientAsyncWriter(
+            socket: pair.writer,
+            writableWaitTimeoutNanoseconds: 20_000_000
+        )
+        let start = ContinuousClock.now
+        let result = await writer.writeAll(Data(repeating: 0x78, count: 8 * 1024 * 1024))
+
+        #expect(!result)
+        #expect(ContinuousClock.now - start < .seconds(2))
+    }
 }

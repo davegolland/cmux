@@ -105,6 +105,27 @@ import Testing
         #expect(interp.evaluate("let x = 5") == nil)
     }
 
+    @Test func rejectsExcessiveSourceNestingBeforeParsing() {
+        let depth = SwiftSourceSecurityGuard.maximumDelimiterDepth + 1
+        let source = String(repeating: "(", count: depth) + "Text(\"x\")" + String(repeating: ")", count: depth)
+        #expect(!interp.parse(source).isValid)
+        #expect(interp.evaluate(source) == nil)
+    }
+
+    @Test func delimitersInCommentsAndStringsDoNotTripNestingGuard() {
+        let source = "// " + String(repeating: "(", count: 2_000) + "\nText(\"" + String(repeating: "{", count: 2_000) + "\")"
+        #expect(SwiftSourceSecurityGuard.isWithinLimits(source))
+        #expect(interp.evaluate(source)?.text == String(repeating: "{", count: 2_000))
+    }
+
+    @Test func rejectsDeepNestingInsideStringInterpolation() {
+        let depth = SwiftSourceSecurityGuard.maximumDelimiterDepth + 1
+        let expression = String(repeating: "f(", count: depth) + "0" + String(repeating: ")", count: depth)
+        let source = "Text(\"" + "\\" + "(" + expression + ")\")"
+        #expect(!SwiftSourceSecurityGuard.isWithinLimits(source))
+        #expect(!interp.parse(source).isValid)
+    }
+
     @Test func interpretsForLoopWithInterpolation() {
         let node = interp.evaluate("""
         VStack {
@@ -356,6 +377,33 @@ import Testing
         // segment drops and the literal prefix remains (not a crash, not a
         // garbage number).
         #expect(node?.children.map(\.text) == ["v=", "m=", "ok"])
+    }
+
+    @Test func integerOverflowAndMinNegationFailSoft() {
+        // Reporting-overflow arithmetic must keep hostile literals from
+        // trapping the in-process interpreter.
+        let node = interp.evaluate("""
+        VStack {
+            Text("add=\\(9223372036854775807 + 1)")
+            Text("subtract=\\(-9223372036854775807 - 2)")
+            Text("multiply=\\(9223372036854775807 * 2)")
+            Text("min=\\(-(-9223372036854775807 - 1))")
+            Text("after")
+        }
+        """)
+        #expect(node?.children.last?.text == "after")
+    }
+
+    @Test func hugeCollectionOperationsFailSoft() {
+        // A value-only collection operation must not create an unbounded
+        // materialised array or quadratic sort workload.
+        let node = interp.evaluate("""
+        VStack {
+            Text("\\((0..<10001).count)")
+            Text("after")
+        }
+        """)
+        #expect(node?.children.last?.text == "after")
     }
 
     @Test func logicalAndShortCircuitsPastOutOfBoundsRight() {

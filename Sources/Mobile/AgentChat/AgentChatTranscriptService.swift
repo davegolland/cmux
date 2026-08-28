@@ -2,6 +2,9 @@ import CMUXAgentLaunch
 import CmuxAgentChat
 import CmuxTerminal
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#endif
 
 /// Retains terminal render/tick notifications only while live prose streaming
 /// can consume them. Frame notifications cover visible surfaces; tick
@@ -502,7 +505,7 @@ final class AgentChatTranscriptService {
             entry["workspace_id"] = record.workspaceID
             entry["surface_id"] = record.surfaceID
             entry["transcript_path"] = record.transcriptPath
-            if let pid = record.pid {
+            if let pid = record.pid, AgentChatPIDValidation.isValid(pid) {
                 entry["pid"] = pid
                 entry["pid_alive"] = kill(pid_t(pid), 0) == 0
             }

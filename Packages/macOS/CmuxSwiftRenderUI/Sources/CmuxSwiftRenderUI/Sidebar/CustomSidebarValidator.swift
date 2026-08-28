@@ -3,6 +3,8 @@ import Foundation
 
 /// Validates custom sidebar files using the same JSON schema and Swift interpreter as rendering.
 public struct CustomSidebarValidator {
+    private static let maxDirectoryEntriesInspected = 4_096
+    private static let maxDiscoveredSidebars = 256
     private let fileManager: FileManager
     private let fallbackDataContext: [String: SwiftValue]
 
@@ -17,13 +19,9 @@ public struct CustomSidebarValidator {
 
     /// Discovers custom sidebar source files in a directory.
     ///
-    /// Swift files are preferred over JSON files with the same base name.
+    /// When several files share a base name, the extension priority is
+    /// `js > swift > json`.
     public func discover(in directory: URL, name requestedName: String? = nil) -> [URL] {
-        guard let entries = try? fileManager.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: nil
-        ) else { return [] }
-
         // Priority when several extensions share a base name: js > swift > json.
         func priority(_ ext: String) -> Int {
             switch ext {
@@ -34,7 +32,48 @@ public struct CustomSidebarValidator {
             }
         }
         var fileByName: [String: URL] = [:]
-        for url in entries {
+        guard directory.isFileURL,
+              directory.path.hasPrefix("/"),
+              directory.path.utf8.count <= SidebarSecurityLimits.maxFilePathBytes,
+              let directoryValues = try? directory.resourceValues(
+                  forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+              ),
+              directoryValues.isDirectory == true,
+              directoryValues.isSymbolicLink != true else {
+            return []
+        }
+        // Use the directory enumerator so a hostile directory cannot force
+        // FileManager to materialise an unbounded array before we apply our
+        // own inspection cap. Subdirectories are deliberately skipped: custom
+        // sidebars are immediate children of this directory. We call
+        // `skipDescendants()` instead of relying on an SDK-specific option,
+        // because the package is also compiled by the Linux Swift toolchain.
+        guard let enumerator = fileManager.enumerator(
+            at: directory,
+            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey, .isRegularFileKey],
+            options: [],
+            errorHandler: { _, _ in true }
+        ) else { return [] }
+        var inspected = 0
+        while let object = enumerator.nextObject() {
+            inspected += 1
+            guard inspected <= Self.maxDirectoryEntriesInspected,
+                  let url = object as? URL else {
+                if inspected > Self.maxDirectoryEntriesInspected { break }
+                continue
+            }
+            guard url.isFileURL,
+                  url.path.utf8.count <= SidebarSecurityLimits.maxFilePathBytes,
+                  let values = try? url.resourceValues(
+                      forKeys: [.isDirectoryKey, .isSymbolicLinkKey, .isRegularFileKey]
+                  ) else {
+                continue
+            }
+            if values.isSymbolicLink == true || values.isDirectory == true {
+                enumerator.skipDescendants()
+                continue
+            }
+            guard values.isRegularFile == true else { continue }
             let ext = url.pathExtension.lowercased()
             guard priority(ext) > 0 else { continue }
             let name = url.deletingPathExtension().lastPathComponent
@@ -43,7 +82,7 @@ public struct CustomSidebarValidator {
             fileByName[name] = url
         }
 
-        return fileByName.keys.sorted().compactMap { fileByName[$0] }
+        return fileByName.keys.sorted().prefix(Self.maxDiscoveredSidebars).compactMap { fileByName[$0] }
     }
 
     /// Validates every discovered sidebar, or one requested sidebar name.
@@ -89,7 +128,7 @@ public struct CustomSidebarValidator {
         do {
             switch kind {
             case .swift:
-                let source = try String(contentsOf: fileURL, encoding: .utf8)
+                let source = try SidebarBoundedFileReader.string(from: fileURL, fileManager: fileManager)
                 let node = SwiftViewInterpreter().evaluate(source, state: dataContext ?? fallbackDataContext)
                 guard node != nil else {
                     return CustomSidebarValidationEntry(
@@ -100,10 +139,10 @@ public struct CustomSidebarValidator {
                     )
                 }
             case .json:
-                let data = try Data(contentsOf: fileURL)
-                _ = try JSONDecoder().decode(DSLDocument.self, from: data)
+                let data = try SidebarBoundedFileReader.data(from: fileURL, fileManager: fileManager)
+                _ = try DSLDocument.decodeValidated(from: data)
             case .js:
-                let source = try String(contentsOf: fileURL, encoding: .utf8)
+                let source = try SidebarBoundedFileReader.string(from: fileURL, fileManager: fileManager)
                 if let message = SidebarJSRuntime.validate(source: source, state: dataContext ?? fallbackDataContext) {
                     return CustomSidebarValidationEntry(
                         name: name,
@@ -131,12 +170,33 @@ public struct CustomSidebarValidator {
 
     /// Converts decoding and filesystem errors into sidebar-facing text.
     public func describe(_ error: Error) -> String {
+        if case SidebarFileReadError.tooLarge = error {
+            return String(
+                localized: "sidebar.custom.validation.fileTooLarge",
+                defaultValue: "Sidebar file is too large.",
+                bundle: .module
+            )
+        }
+        if case SidebarFileReadError.invalidUTF8 = error {
+            return String(
+                localized: "sidebar.custom.validation.invalidEncoding",
+                defaultValue: "Sidebar file is not valid UTF-8.",
+                bundle: .module
+            )
+        }
+        if error is DSLDocumentValidationError {
+            return String(
+                localized: "sidebar.custom.validation.resourceLimit",
+                defaultValue: "Sidebar JSON exceeds a safe resource limit.",
+                bundle: .module
+            )
+        }
         if let decoding = error as? DecodingError {
             switch decoding {
             case let .keyNotFound(key, ctx):
                 return String(
                     format: String(localized: "sidebar.custom.validation.missingKey", defaultValue: "Missing key '%@' at %@"),
-                    key.stringValue,
+                    boundedDiagnostic(key.stringValue),
                     decodingPath(ctx)
                 )
             case let .typeMismatch(_, ctx):
@@ -224,6 +284,20 @@ public struct CustomSidebarValidator {
 }
 
 private func decodingPath(_ ctx: DecodingError.Context) -> String {
-    let parts = ctx.codingPath.map(\.stringValue)
+    let parts = ctx.codingPath.prefix(32).map { boundedDiagnostic($0.stringValue) }
     return parts.isEmpty ? String(localized: "sidebar.custom.validation.rootPath", defaultValue: "root") : parts.joined(separator: " › ")
+}
+
+/// Decoding keys come from the sidebar file. Keep malformed input from
+/// injecting control characters or an unbounded string into the validation UI.
+private func boundedDiagnostic(_ value: String) -> String {
+    var result = ""
+    for scalar in value.unicodeScalars {
+        let replacement = CharacterSet.controlCharacters.contains(scalar) ? "�" : String(scalar)
+        guard result.utf8.count + replacement.utf8.count <= SidebarSecurityLimits.maxDiagnosticComponentBytes else {
+            break
+        }
+        result.append(contentsOf: replacement)
+    }
+    return result.isEmpty ? "?" : result
 }

@@ -6,6 +6,11 @@ internal import Carbon.HIToolbox
 internal import CMUXDebugLog
 #endif
 
+/// Maximum bytes copied from a libghostty text result. The C API reports a
+/// `uintptr_t` length, so the Swift conversion must be checked before any
+/// allocation.
+private let terminalSurfaceMaximumReadTextBytes = 4 * 1024 * 1024
+
 // MARK: - Socket/API input: send paths, pending queues, parsing
 
 extension TerminalSurface {
@@ -718,10 +723,15 @@ extension TerminalSurface {
             ghostty_surface_free_text(surface, &text)
         }
 
-        guard let ptr = text.text, text.text_len > 0 else {
+        guard text.text_len > 0 else {
             return ""
         }
-        let rawData = Data(bytes: ptr, count: Int(text.text_len))
+        guard let ptr = text.text,
+              let byteCount = Int(exactly: text.text_len),
+              byteCount <= terminalSurfaceMaximumReadTextBytes else {
+            return nil
+        }
+        let rawData = Data(bytes: ptr, count: byteCount)
         return String(decoding: rawData, as: UTF8.self)
     }
 

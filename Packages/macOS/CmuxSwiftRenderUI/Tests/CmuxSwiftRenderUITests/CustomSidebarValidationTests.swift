@@ -40,6 +40,18 @@ struct CustomSidebarValidationTests {
         #expect(report.entries.first?.kind == .js)
     }
 
+    @Test("does not traverse a symlinked sidebar directory")
+    func doesNotTraverseSymlinkedDirectory() throws {
+        let directory = try temporaryDirectory()
+        let outside = try temporaryDirectory()
+        try "sidebar(() => Text(\"outside\"))"
+            .write(to: outside.appendingPathComponent("outside.js"), atomically: true, encoding: .utf8)
+        let link = directory.appendingPathComponent("linked")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+
+        #expect(validator.discover(in: directory).isEmpty)
+    }
+
     @Test("reports JS programs that throw")
     func reportsThrowingJSProgram() throws {
         let directory = try temporaryDirectory()
@@ -51,6 +63,22 @@ struct CustomSidebarValidationTests {
         #expect(report.validCount == 0)
         #expect(report.errorCount == 1)
         #expect(report.entries.first?.errorMessage?.isEmpty == false)
+    }
+
+    @Test("rejects oversized sidebar files before interpretation")
+    @MainActor
+    func rejectsOversizedSidebarFiles() throws {
+        let directory = try temporaryDirectory()
+        let fileURL = directory.appendingPathComponent("oversized.js")
+        try String(repeating: "x", count: SidebarSecurityLimits.maxSourceBytes + 1)
+            .write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let report = validator.validate(fileURL: fileURL)
+        #expect(report.errorMessage == "Sidebar file is too large.")
+
+        let model = CustomSidebarModel(fileURL: fileURL)
+        model.reload()
+        #expect(model.state == .failed("Sidebar file is too large."))
     }
 
     @Test("reports JSON schema errors with root path")
@@ -65,6 +93,36 @@ struct CustomSidebarValidationTests {
         #expect(report.validCount == 0)
         #expect(report.errorCount == 1)
         #expect(report.entries.first?.errorMessage == "Missing key 'version' at root")
+    }
+
+    @Test("rejects JSON trees that exceed the renderer depth limit")
+    func rejectsDeepJSONTree() throws {
+        let directory = try temporaryDirectory()
+        var source = #"{"version":1,"root":"#
+        for _ in 0...SidebarSecurityLimits.maxDSLDepth {
+            source += #"{"type":"vstack","children":["#
+        }
+        source += #"{"type":"text","text":"leaf"}"#
+        for _ in 0...SidebarSecurityLimits.maxDSLDepth {
+            source += #"]}"#
+        }
+        source += #"}"#
+        let url = directory.appendingPathComponent("deep.json")
+        try source.write(to: url, atomically: true, encoding: .utf8)
+
+        let report = validator.validate(fileURL: url)
+        #expect(report.errorMessage == "Sidebar JSON exceeds a safe resource limit.")
+    }
+
+    @Test("rejects JSON values that can create unsafe layout or actions")
+    func rejectsUnsafeJSONValues() throws {
+        let directory = try temporaryDirectory()
+        let url = directory.appendingPathComponent("unsafe.json")
+        try #"{"version":1,"root":{"type":"button","title":"Close","size":-1,"action":{"type":"send"}}}"#
+            .write(to: url, atomically: true, encoding: .utf8)
+
+        let report = validator.validate(fileURL: url)
+        #expect(report.errorMessage == "Sidebar JSON exceeds a safe resource limit.")
     }
 
     @Test("reports Swift files that do not render a supported view")

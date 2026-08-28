@@ -24,7 +24,10 @@ public final class SidebarSelectCoalescer: @unchecked Sendable {
     public func stamp() -> UInt64 {
         lock.lock()
         defer { lock.unlock() }
-        latest += 1
+        // Wrapping is harmless for equality-based freshness checks. A trap on
+        // an unreachable UInt64 boundary would turn a long-lived sidebar into
+        // a denial of service, so keep the generation total.
+        latest &+= 1
         return latest
     }
 

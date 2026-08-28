@@ -45,6 +45,27 @@ private final class SocketPairFixture {
 
 @Suite("ControlClientLineReader")
 struct ControlClientLineReaderTests {
+    @Test func preauthorizationLimitsClampUntrustedValues() {
+        let limits = ControlClientLineReadLimits(
+            maximumBytes: Int.max,
+            timeoutMilliseconds: Int.max
+        )
+        #expect(
+            limits.maximumBytes == ControlClientLineReadLimits.maximumAllowedBytes
+        )
+        #expect(
+            limits.timeoutMilliseconds ==
+                ControlClientLineReadLimits.maximumAllowedTimeoutMilliseconds
+        )
+
+        let negative = ControlClientLineReadLimits(
+            maximumBytes: -1,
+            timeoutMilliseconds: -1
+        )
+        #expect(negative.maximumBytes == 0)
+        #expect(negative.timeoutMilliseconds == 0)
+    }
+
     @Test func splitsBufferedChunkIntoLines() throws {
         let pair = try SocketPairFixture()
         pair.write("first\nsecond\n")
@@ -76,6 +97,17 @@ struct ControlClientLineReaderTests {
         // the scalar to straddle two read(2) calls.
         let reader = ControlClientLineReader(socket: pair.readEnd, bufferSize: 3)
         #expect(reader.nextLine(shouldContinueReading: { true }) == "あ")
+    }
+
+    @Test func clampsInvalidAndHugeReadBufferSizes() throws {
+        let pair = try SocketPairFixture()
+        pair.write("ok\n")
+        pair.closeWriteEnd()
+
+        // A hostile caller cannot trigger a zero-count read or a giant
+        // allocation through the legacy buffer-size seam.
+        let reader = ControlClientLineReader(socket: pair.readEnd, bufferSize: Int.max)
+        #expect(reader.nextLine(shouldContinueReading: { true }) == "ok")
     }
 
     @Test func crlfIsNotALineTerminator() throws {

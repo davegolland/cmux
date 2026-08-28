@@ -1,6 +1,125 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "sidebar.custom.runtime.missing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sidebar runtime support is missing."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "サイドバーランタイムが見つかりません。"
+          }
+        }
+      }
+    },
+    "sidebar.custom.runtime.noView": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This sidebar did not create a view."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このサイドバーはビューを作成しませんでした。"
+          }
+        }
+      }
+    },
+    "sidebar.custom.runtime.resourceLimit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This sidebar exceeded its resource limit."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このサイドバーはリソース制限を超えました。"
+          }
+        }
+      }
+    },
+    "sidebar.custom.runtime.scriptFailed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sidebar script failed. Check the sidebar source."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "サイドバースクリプトに失敗しました。ソースを確認してください。"
+          }
+        }
+      }
+    },
+    "sidebar.custom.runtime.scriptFailedLine": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sidebar script failed near line %d."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "サイドバースクリプトが%d行付近で失敗しました。"
+          }
+        }
+      }
+    },
+    "sidebar.custom.runtime.sourceTooLarge": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This sidebar file is too large."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このサイドバーファイルは大きすぎます。"
+          }
+        }
+      }
+    },
+    "sidebar.custom.runtime.unavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This sidebar could not start safely."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このサイドバーを安全に起動できませんでした。"
+          }
+        }
+      }
+    },
     "sidebar.custom.error": {
       "extractionState": "manual",
       "localizations": {
@@ -48,6 +167,57 @@
           "stringUnit": {
             "state": "translated",
             "value": "対応するSwiftUIビューが見つかりません。"
+          }
+        }
+      }
+    },
+    "sidebar.custom.validation.fileTooLarge": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sidebar file is too large."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "サイドバーファイルが大きすぎます。"
+          }
+        }
+      }
+    },
+    "sidebar.custom.validation.invalidEncoding": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sidebar file is not valid UTF-8."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "サイドバーファイルは有効なUTF-8ではありません。"
+          }
+        }
+      }
+    },
+    "sidebar.custom.validation.resourceLimit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sidebar JSON exceeds a safe resource limit."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "サイドバーJSONが安全なリソース制限を超えています。"
           }
         }
       }

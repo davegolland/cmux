@@ -69,6 +69,29 @@ import Testing
         #expect(recovered?.text == "after timeout")
     }
 
+    @Test func cancellationStopsTheWorkerAndDoesNotLeaveAWaiter() async {
+        let hangToken = "__CANCEL_THE_WORKER__"
+        let client = InterpreterClient(
+            executableURL: interpreterWorkerURL(),
+            timeout: .seconds(10),
+            environment: ["CMUX_INTERPRETER_TEST_HANG_TOKEN": hangToken]
+        )
+
+        let pending = Task {
+            await client.render(source: hangToken, state: [:])
+        }
+        // Give the actor enough time to launch the worker and park on the
+        // response continuation, then cancel the caller's task.
+        try? await Task.sleep(for: .milliseconds(100))
+        pending.cancel()
+        let canceled = await pending.value
+        #expect(canceled == nil)
+
+        let recovered = await client.render(source: "Text(\"after cancel\")", state: [:])
+        await client.shutdown()
+        #expect(recovered?.text == "after cancel")
+    }
+
     @Test func reusesOneWorkerAcrossManyRenders() async {
         let client = InterpreterClient(executableURL: interpreterWorkerURL(), timeout: .seconds(10))
         for index in 0..<8 {

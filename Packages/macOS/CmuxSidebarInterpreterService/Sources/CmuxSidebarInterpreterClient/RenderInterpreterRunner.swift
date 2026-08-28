@@ -19,6 +19,9 @@ public final class RenderInterpreterRunner {
     /// Interprets `request.source` against `request.state` and returns the
     /// matching response, reusing a cached parse when the source is unchanged.
     public func run(_ request: InterpreterRequest) -> InterpreterResponse {
+        guard request.isWithinSecurityLimits() else {
+            return InterpreterResponse(id: request.id, node: nil)
+        }
         // Test-only fault injection, gated behind environment variables the app
         // never sets. This lets crash/timeout isolation be verified through the
         // real process boundary (a worker that genuinely dies/hangs), which is

@@ -77,4 +77,54 @@ struct ControlRequestParserTests {
         let result = parser.request(fromLine: #"  {"method":"m"}"#)
         #expect((try? result.get())?.method == "m")
     }
+
+    // MARK: - Resource limits
+
+    @Test func rejectsExcessiveNestingBeforeFoundationParsing() {
+        let line = String(repeating: "[", count: ControlJSONGuard.maximumDepth + 1)
+            + "0"
+            + String(repeating: "]", count: ControlJSONGuard.maximumDepth + 1)
+        #expect(strictError(line) == .invalidJSON)
+        #expect(parser.lenientRequest(fromLine: line) == nil)
+    }
+
+    @Test func rejectsExcessiveTokenCountBeforeFoundationParsing() {
+        let values = String(repeating: "0,", count: ControlJSONGuard.maximumTokens / 2)
+            + "0"
+        let line = "{\"method\":\"probe\",\"params\":{\"values\":[" + values + "]}}"
+        #expect(strictError(line) == .invalidJSON)
+    }
+
+    @Test func rejectsOversizedRequestLine() {
+        let value = String(repeating: "x", count: ControlJSONGuard.maximumBytes)
+        let line = "{\"method\":\"probe\",\"value\":\"" + value + "\"}"
+        #expect(line.utf8.count > ControlJSONGuard.maximumBytes)
+        #expect(strictError(line) == .invalidJSON)
+    }
+
+    @Test func acceptsEscapedUnicodeAndBoundedText() throws {
+        let request = try #require(parser.lenientRequest(
+            fromLine: #"{"method":"probe","params":{"text":"line\n\u263a"}}"#
+        ))
+        #expect(request.params["text"] == .string("line\n☺"))
+    }
+
+    @Test func rejectsOversizedEnvelopeFieldsBeforeBridging() {
+        let longMethod = String(repeating: "m", count: ControlJSONGuard.maximumMethodBytes + 1)
+        #expect(parser.lenientRequest(fromLine: #"{"method":""# + longMethod + #""}"#) == nil)
+
+        let longKey = String(repeating: "k", count: ControlJSONGuard.maximumParameterKeyBytes + 1)
+        let keyLine = #"{"method":"probe","params":{""# + longKey + #"":"v"}}"#
+        #expect(parser.lenientRequest(fromLine: keyLine) == nil)
+    }
+
+    @Test func rejectsTooManyTopLevelParameters() {
+        var pairs: [String] = []
+        pairs.reserveCapacity(ControlJSONGuard.maximumParameterCount + 1)
+        for index in 0...ControlJSONGuard.maximumParameterCount {
+            pairs.append(#""p"# + String(index) + #"":0"#)
+        }
+        let line = #"{"method":"probe","params":{"# + pairs.joined(separator: ",") + "}}"
+        #expect(parser.lenientRequest(fromLine: line) == nil)
+    }
 }

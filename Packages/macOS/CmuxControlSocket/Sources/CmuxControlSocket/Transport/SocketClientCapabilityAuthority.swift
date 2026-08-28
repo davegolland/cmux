@@ -62,6 +62,9 @@ public struct SocketClientCapabilityAuthority: @unchecked Sendable {
     /// - Parameter capability: Opaque token presented by a socket client.
     /// - Returns: `true` only for a structurally valid token with a valid MAC.
     public func verifies(_ capability: String) -> Bool {
+        guard SocketClientCapabilityCommand.isCapabilityToken(capability) else {
+            return false
+        }
         let components = capability.split(separator: ".", omittingEmptySubsequences: false)
         guard components.count == 3,
               components[0] == "v1",

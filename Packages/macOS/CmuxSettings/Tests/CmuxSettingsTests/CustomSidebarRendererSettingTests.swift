@@ -5,7 +5,7 @@ import Testing
 /// Behavior of the `customSidebars.renderer` setting through the real JSON
 /// store: the on-disk strings users put in `~/.config/cmux/cmux.json` must
 /// decode to the right renderer, and anything else must fall back to the
-/// default (native in-process rendering).
+/// default (the crash-isolated remote worker).
 @Suite("customSidebars.renderer")
 struct CustomSidebarRendererSettingTests {
     private func makeStore() -> (JSONConfigStore, URL) {
@@ -16,10 +16,10 @@ struct CustomSidebarRendererSettingTests {
         return (JSONConfigStore(fileURL: fileURL), fileURL)
     }
 
-    @Test func defaultsToInProcessWhenUnset() async {
+    @Test func defaultsToRemoteWhenUnset() async {
         let (store, _) = makeStore()
         let value = await store.value(for: SettingCatalog().customSidebars.renderer)
-        #expect(value == .inProcess)
+        #expect(value == .remote)
     }
 
     @Test func readsRemoteFromHandEditedConfigFile() async throws {
@@ -35,7 +35,7 @@ struct CustomSidebarRendererSettingTests {
         try #"{ "customSidebars": { "renderer": "yolo" } }"#
             .write(to: fileURL, atomically: true, encoding: .utf8)
         let value = await store.value(for: SettingCatalog().customSidebars.renderer)
-        #expect(value == .inProcess)
+        #expect(value == .remote)
     }
 
     @Test func roundTripsThroughTheStore() async throws {

@@ -3,8 +3,11 @@ import CmuxSidebarInterpreterClient
 import CmuxSwiftRender
 import CmuxSwiftRenderUI
 import Observation
+import OSLog
 import QuartzCore
 import SwiftUI
+
+private let sidebarRenderWorkerLogger = Logger(subsystem: "com.cmuxterm.app", category: "SidebarRenderWorker")
 
 /// The render worker's main-actor state machine: owns the offscreen surface
 /// (window + `NSHostingView`), the shared remote context, the watched sidebar
@@ -82,12 +85,17 @@ final class RenderWorkerCoordinator {
     private func debugLog(_ message: @autoclosure () -> String) {
         guard debugEnabled else { return }
         let timestamp = String(format: "%.3f", CACurrentMediaTime() * 1000)
-        FileHandle.standardError.write(Data("render-worker: [t=\(timestamp)ms] \(message())\n".utf8))
+        let value = message()
+        sidebarRenderWorkerLogger.debug("render-worker t=\(timestamp, privacy: .public)ms: \(value, privacy: .private)")
     }
 
     /// Applies one host message. Called from a single FIFO consumer, so
     /// ordering matches the wire.
     func handle(_ message: RenderWorkerInbound) {
+        guard message.isWithinSecurityLimits() else {
+            debugLog("rejected malformed worker message")
+            return
+        }
         switch message {
         case let .scene(scene):
             apply(scene)
@@ -150,6 +158,7 @@ final class RenderWorkerCoordinator {
     // MARK: - Scene / geometry
 
     private func apply(_ scene: RenderScene) {
+        guard scene.isWithinSecurityLimits() else { return }
         ensureSurface()
         dataState = scene.state
         insets = CustomSidebarContentInsets(top: scene.topInset, bottom: scene.bottomInset)
@@ -172,6 +181,7 @@ final class RenderWorkerCoordinator {
     }
 
     private func apply(_ geometry: RenderSurfaceGeometry) {
+        guard geometry.isWithinSecurityLimits() else { return }
         ensureSurface()
         self.geometry = geometry
         guard let window, let hosting else { return }
@@ -312,6 +322,7 @@ final class RenderWorkerCoordinator {
     // MARK: - Input
 
     private func deliver(_ event: RenderPointerEvent) {
+        guard event.isWithinSecurityLimits() else { return }
         guard let hosting else { return }
         let location = NSPoint(x: event.x, y: event.y)
         switch event.kind {
@@ -399,6 +410,10 @@ final class RenderWorkerCoordinator {
     // MARK: - Outbound
 
     private func send(_ message: RenderWorkerOutbound) {
+        guard message.isWithinSecurityLimits() else {
+            debugLog("rejected malformed outbound worker message")
+            return
+        }
         guard let data = try? encoder.encode(message) else { return }
         try? channel.sendMessage(data)
     }

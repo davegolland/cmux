@@ -343,8 +343,11 @@ struct CustomSidebarDataContextBuilderTests {
         #expect(value.member("panelId") == .string(panelId.uuidString))
         #expect(value.member("surfaceId") == .string(surfaceId.uuidString))
         #expect(value.member("directory") == .string("/repo"))
-        #expect(value.member("transcriptPath") == .string("/tmp/sess-1.jsonl"))
-        #expect(value.member("pid") == .int(4242))
+        // Native transcript paths and PIDs are intentionally not exposed to
+        // authored sidebar code. The transfer feature can add a scoped token
+        // later without widening this general data context.
+        #expect(value.member("transcriptPath") == nil)
+        #expect(value.member("pid") == nil)
         // No children -> the key is omitted entirely.
         #expect(value.member("children") == nil)
     }
@@ -479,5 +482,53 @@ struct CustomSidebarDataContextBuilderTests {
         #expect(value.member("anchorId") == .string(anchorId.uuidString))
         #expect(value.member("color") == .string("#FF8800"))
         #expect(value.member("icon") == nil)
+    }
+
+    @Test("Host text replaces control characters before interpreter projection")
+    func controlCharactersAreSanitized() {
+        let builder = CustomSidebarDataContextBuilder()
+        let workspace = CustomSidebarWorkspaceSnapshot(
+            id: UUID(),
+            title: "unsafe\u{1B}[31m title",
+            isSelected: false,
+            isPinned: false,
+            index: 0,
+            directory: "/repo\u{07}",
+            listeningPorts: [],
+            unreadCount: 0,
+            surfaces: [],
+            surfaceCount: 0,
+            customDescription: nil,
+            customColor: nil,
+            gitBranch: nil,
+            gitIsDirty: false,
+            pullRequestValues: [],
+            progress: nil,
+            latestConversationMessage: nil,
+            latestSubmittedMessage: nil,
+            latestSubmittedAt: nil,
+            remote: nil
+        )
+
+        let value = builder.workspaceValue(workspace)
+
+        #expect(value.member("title") == .string("unsafe�[31m title"))
+        #expect(value.member("directory") == .string("/repo�"))
+    }
+
+    @Test("Epoch conversion fails closed at the rounded Int upper boundary")
+    func epochUpperBoundaryDoesNotTrap() {
+        let builder = CustomSidebarDataContextBuilder(calendar: fixedCalendar())
+        let snapshot = CustomSidebarContextSnapshot(
+            workspaces: [],
+            selectedWorkspaceId: nil,
+            selectedWorkspaceTitle: "",
+            totalUnreadCount: 0,
+            now: Date(timeIntervalSince1970: Double(Int.max))
+        )
+
+        // The builder must return its documented safe default instead of
+        // trapping when a hostile timestamp rounds to 2^63 as a Double.
+        #expect(builder.dataContext(for: snapshot)["clock"]?.member("epoch") == .int(0))
     }
 }

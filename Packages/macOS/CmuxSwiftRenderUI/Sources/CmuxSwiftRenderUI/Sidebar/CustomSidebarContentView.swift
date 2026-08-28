@@ -50,8 +50,19 @@ public struct CustomSidebarContentView: View {
 
     public var body: some View {
         content
-            .environment(\.sidebarActionDispatch, dispatch)
+            .environment(\.sidebarActionDispatch, restrictedDispatch)
             .environment(\.customSidebarContentInsets, contentInsets)
+    }
+
+    /// Authored sidebar actions are untrusted input. Keep a package-level
+    /// capability check in front of every renderer, including JSON and Swift
+    /// paths; the app's cmux socket dispatch applies the same check again.
+    private var restrictedDispatch: SidebarActionDispatch {
+        let policy = SidebarActionPolicy.default
+        return SidebarActionDispatch { action in
+            guard let validated = policy.validated(action) else { return }
+            dispatch.run(validated)
+        }
     }
 
     @ViewBuilder
@@ -68,7 +79,7 @@ public struct CustomSidebarContentView: View {
             // interpreted path uses, so taps in a declarative sidebar run
             // instead of being silently dropped.
             scrollWrap(DSLSidebarRenderer(node: document.root) { action in
-                dispatch.run(action.buttonAction)
+                restrictedDispatch.run(action.buttonAction)
             })
         case .swiftSource:
             // Keep showing the last interpreted result until the next one

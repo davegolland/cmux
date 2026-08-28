@@ -12,6 +12,11 @@ import os
 
 private let log = Logger(subsystem: "ai.manaflow.cmux.ios", category: "ghostty.surface")
 
+/// Maximum bytes copied from a libghostty text result. The C API reports a
+/// `uintptr_t` length, so the Swift conversion must be checked before any
+/// allocation.
+private let ghosttySurfaceMaximumReadTextBytes = 4 * 1024 * 1024
+
 public final class GhosttySurfaceView: UIView, TerminalSurfaceHosting {
     /// The surface whose terminal proxy or composer currently owns input.
     ///
@@ -3568,11 +3573,16 @@ public final class GhosttySurfaceView: UIView, TerminalSurfaceHosting {
             ghostty_surface_free_text(surface, &text)
         }
 
-        guard let ptr = text.text, text.text_len > 0 else {
+        guard text.text_len > 0 else {
             return ""
         }
+        guard let ptr = text.text,
+              let byteCount = Int(exactly: text.text_len),
+              byteCount <= ghosttySurfaceMaximumReadTextBytes else {
+            return nil
+        }
 
-        let data = Data(bytes: ptr, count: Int(text.text_len))
+        let data = Data(bytes: ptr, count: byteCount)
         return String(decoding: data, as: UTF8.self)
     }
 
@@ -3619,8 +3629,11 @@ public final class GhosttySurfaceView: UIView, TerminalSurfaceHosting {
         var text = ghostty_text_s()
         guard ghostty_surface_read_text(surface, selection, &text) else { return nil }
         defer { ghostty_surface_free_text(surface, &text) }
-        guard let ptr = text.text, text.text_len > 0 else { return "" }
-        return String(decoding: Data(bytes: ptr, count: Int(text.text_len)), as: UTF8.self)
+        guard text.text_len > 0 else { return "" }
+        guard let ptr = text.text,
+              let byteCount = Int(exactly: text.text_len),
+              byteCount <= ghosttySurfaceMaximumReadTextBytes else { return nil }
+        return String(decoding: Data(bytes: ptr, count: byteCount), as: UTF8.self)
     }
 
     func copyableTextForCurrentSurface(surface expectedSurface: ghostty_surface_t) async -> String? {

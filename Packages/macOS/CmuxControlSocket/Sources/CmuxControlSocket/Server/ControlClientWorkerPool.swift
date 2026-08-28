@@ -12,6 +12,12 @@
 /// A caller supplies synchronous cleanup for rejected/dropped jobs. An
 /// admitted operation owns its descriptor until the operation returns.
 public actor ControlClientWorkerPool {
+    /// Absolute ceilings for public initializer values. Configuration must
+    /// not be able to turn a bounded pool into an unbounded task or memory
+    /// admission surface.
+    public static let maximumConcurrentJobs = 256
+    public static let maximumPendingJobs = 1_024
+
     /// The result of attempting to admit one connection job.
     public enum Submission: Sendable, Equatable {
         /// The operation started immediately.
@@ -79,8 +85,14 @@ public actor ControlClientWorkerPool {
         maximumConcurrentJobs: Int = 32,
         maximumPendingJobs: Int = 64
     ) {
-        self.maximumConcurrentJobs = max(1, maximumConcurrentJobs)
-        self.maximumPendingJobs = max(0, maximumPendingJobs)
+        self.maximumConcurrentJobs = min(
+            max(1, maximumConcurrentJobs),
+            Self.maximumConcurrentJobs
+        )
+        self.maximumPendingJobs = min(
+            max(0, maximumPendingJobs),
+            Self.maximumPendingJobs
+        )
     }
 
     /// Attempts to submit one asynchronous connection operation.

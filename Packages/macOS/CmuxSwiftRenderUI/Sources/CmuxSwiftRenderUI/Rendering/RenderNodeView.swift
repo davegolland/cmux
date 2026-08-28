@@ -2,6 +2,32 @@ import CmuxFoundation
 import CmuxSwiftRender
 import SwiftUI
 
+private enum RenderViewLimits {
+    static let maxDimension = 10_000.0
+    static let maxEffectRadius = 1_000.0
+    static let maxFontSize = 256.0
+    static let maxLineLimit = 10_000.0
+    static let maxRatio = 1_000_000.0
+    static let maxAngle = 360_000.0
+}
+
+private func renderFinite(_ value: Double?, maximum: Double = RenderViewLimits.maxDimension) -> Double? {
+    guard let value, value.isFinite, abs(value) <= maximum else { return nil }
+    return value
+}
+
+private func renderNonnegative(_ value: Double?, maximum: Double = RenderViewLimits.maxDimension) -> Double? {
+    guard let value = renderFinite(value, maximum: maximum), value >= 0 else { return nil }
+    return value
+}
+
+private func renderCGFloat(_ value: Double?, maximum: Double = RenderViewLimits.maxDimension, nonnegative: Bool = false) -> CGFloat? {
+    let value = nonnegative ? renderNonnegative(value, maximum: maximum) : renderFinite(value, maximum: maximum)
+    guard let value else { return nil }
+    let result = CGFloat(value)
+    return result.isFinite ? result : nil
+}
+
 /// Renders the Swift interpreter's ``RenderNode`` IR as native SwiftUI.
 ///
 /// Modifier arguments arrive as source strings (e.g. `.title`, `.blue`, `8`)
@@ -31,15 +57,15 @@ struct RenderNodeView: View {
     private var content: some View {
         switch node.kind {
         case .vstack:
-            VStack(alignment: .leading, spacing: node.spacing.map { CGFloat($0) }) { children }
+            VStack(alignment: .leading, spacing: renderCGFloat(node.spacing, nonnegative: true)) { children }
         case .hstack:
-            HStack(spacing: node.spacing.map { CGFloat($0) }) { children }
+            HStack(spacing: renderCGFloat(node.spacing, nonnegative: true)) { children }
         case .zstack:
             ZStack { children }
         case .lazyVStack:
-            LazyVStack(alignment: .leading, spacing: node.spacing.map { CGFloat($0) }) { children }
+            LazyVStack(alignment: .leading, spacing: renderCGFloat(node.spacing, nonnegative: true)) { children }
         case .lazyHStack:
-            LazyHStack(spacing: node.spacing.map { CGFloat($0) }) { children }
+            LazyHStack(spacing: renderCGFloat(node.spacing, nonnegative: true)) { children }
         case .group:
             Group { children }
         case .list:
@@ -61,19 +87,19 @@ struct RenderNodeView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         case .hscroll:
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: node.spacing.map { CGFloat($0) }) { children }
+                HStack(spacing: renderCGFloat(node.spacing, nonnegative: true)) { children }
             }
         case .grid:
-            Grid(alignment: .leading, horizontalSpacing: node.spacing.map { CGFloat($0) },
-                 verticalSpacing: node.spacing.map { CGFloat($0) }) { children }
+            Grid(alignment: .leading, horizontalSpacing: renderCGFloat(node.spacing, nonnegative: true),
+                 verticalSpacing: renderCGFloat(node.spacing, nonnegative: true)) { children }
         case .gridRow:
             GridRow { children }
         case .lazyVGrid:
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 60), spacing: node.spacing.map { CGFloat($0) })],
-                      spacing: node.spacing.map { CGFloat($0) }) { children }
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 60), spacing: renderCGFloat(node.spacing, nonnegative: true))],
+                      spacing: renderCGFloat(node.spacing, nonnegative: true)) { children }
         case .lazyHGrid:
-            LazyHGrid(rows: [GridItem(.adaptive(minimum: 40), spacing: node.spacing.map { CGFloat($0) })],
-                      spacing: node.spacing.map { CGFloat($0) }) { children }
+            LazyHGrid(rows: [GridItem(.adaptive(minimum: 40), spacing: renderCGFloat(node.spacing, nonnegative: true))],
+                      spacing: renderCGFloat(node.spacing, nonnegative: true)) { children }
         case .viewThatFits:
             ViewThatFits { children }
         case .hsplit:
@@ -104,13 +130,13 @@ struct RenderNodeView: View {
                 .reportTapTarget(node.action)
             }
         case .spacer:
-            Spacer(minLength: node.spacing.map { CGFloat($0) })
+            Spacer(minLength: renderCGFloat(node.spacing, nonnegative: true))
         case .divider:
             Divider()
         case .rectangle:
             styledShape(Rectangle())
         case .roundedRectangle:
-            styledShape(RoundedRectangle(cornerRadius: CGFloat(node.cornerRadius ?? 6)))
+            styledShape(RoundedRectangle(cornerRadius: renderCGFloat(node.cornerRadius, maximum: 1_000, nonnegative: true) ?? 6))
         case .capsule:
             styledShape(Capsule())
         case .circle:
@@ -118,9 +144,9 @@ struct RenderNodeView: View {
         case .ellipse:
             styledShape(Ellipse())
         case .unevenRoundedRectangle:
-            styledShape(RoundedRectangle(cornerRadius: CGFloat(node.cornerRadius ?? 6)))
+            styledShape(RoundedRectangle(cornerRadius: renderCGFloat(node.cornerRadius, maximum: 1_000, nonnegative: true) ?? 6))
         case .progressView:
-            if let value = node.value {
+            if let value = renderFinite(node.value), value >= 0, value <= 1 {
                 ProgressView(value: value) { if let t = node.text { Text(t) } }
             } else if let t = node.text {
                 ProgressView(t)
@@ -128,7 +154,7 @@ struct RenderNodeView: View {
                 ProgressView()
             }
         case .gauge:
-            if let value = node.value {
+            if let value = renderFinite(node.value), value >= 0, value <= 1 {
                 Gauge(value: value) { if let t = node.text { Text(t) } }
             } else {
                 EmptyView()
@@ -195,7 +221,9 @@ struct RenderNodeView: View {
             if let color = dslColor(token) { return AnyView(view.foregroundStyle(color)) }
             return view
         case "padding":
-            if let token, let value = Double(token) { return AnyView(view.padding(CGFloat(value))) }
+            if let value = renderCGFloat(token.flatMap(Double.init), nonnegative: true) {
+                return AnyView(view.padding(value))
+            }
             return AnyView(view.padding())
         case "background":
             if !modifier.children.isEmpty {
@@ -226,50 +254,56 @@ struct RenderNodeView: View {
             }
             return view
         case "cornerRadius":
-            if let token, let value = Double(token) {
-                return AnyView(view.clipShape(RoundedRectangle(cornerRadius: CGFloat(value))))
+            if let value = renderCGFloat(token.flatMap(Double.init), maximum: 1_000, nonnegative: true) {
+                return AnyView(view.clipShape(RoundedRectangle(cornerRadius: value)))
             }
             return view
         case "opacity":
-            if let token, let value = Double(token) { return AnyView(view.opacity(value)) }
+            if let value = token.flatMap(Double.init), value.isFinite {
+                return AnyView(view.opacity(min(max(value, 0), 1)))
+            }
             return view
         case "lineLimit":
-            if let token, let value = Int(token) { return AnyView(view.lineLimit(value)) }
+            if let token, let value = Double(token), value.isFinite,
+               value >= 0, value <= RenderViewLimits.maxLineLimit,
+               let lineLimit = Int(exactly: value) {
+                return AnyView(view.lineLimit(lineLimit))
+            }
             return view
         case "frame":
             return applyFrame(modifier, to: view)
         case "shadow":
-            let radius = modDouble(modifier, "radius") ?? (token.flatMap(Double.init)) ?? 4
+            let radius = renderNonnegative(modDouble(modifier, "radius") ?? token.flatMap(Double.init), maximum: RenderViewLimits.maxEffectRadius) ?? 4
             let color = dslColor(clean(modifier.value("color"))) ?? Color.black.opacity(0.33)
             return AnyView(view.shadow(color: color, radius: CGFloat(radius),
-                                       x: CGFloat(modDouble(modifier, "x") ?? 0),
-                                       y: CGFloat(modDouble(modifier, "y") ?? 0)))
+                                       x: renderCGFloat(modDouble(modifier, "x"), maximum: RenderViewLimits.maxDimension) ?? 0,
+                                       y: renderCGFloat(modDouble(modifier, "y"), maximum: RenderViewLimits.maxDimension) ?? 0))
         case "border":
             let color = dslColor(token) ?? .secondary
-            let width = modDouble(modifier, "width") ?? 1
+            let width = renderNonnegative(modDouble(modifier, "width"), maximum: RenderViewLimits.maxEffectRadius) ?? 1
             return AnyView(view.border(color, width: CGFloat(width)))
         case "blur":
-            let radius = modDouble(modifier, "radius") ?? (token.flatMap(Double.init)) ?? 0
+            let radius = renderNonnegative(modDouble(modifier, "radius") ?? token.flatMap(Double.init), maximum: RenderViewLimits.maxEffectRadius) ?? 0
             return AnyView(view.blur(radius: CGFloat(radius)))
         case "offset":
-            return AnyView(view.offset(x: CGFloat(modDouble(modifier, "x") ?? 0),
-                                       y: CGFloat(modDouble(modifier, "y") ?? 0)))
+            return AnyView(view.offset(x: renderCGFloat(modDouble(modifier, "x")) ?? 0,
+                                       y: renderCGFloat(modDouble(modifier, "y")) ?? 0))
         case "scaleEffect":
-            if let token, let s = Double(token) { return AnyView(view.scaleEffect(CGFloat(s))) }
+            if let s = renderFinite(token.flatMap(Double.init), maximum: 1_000) { return AnyView(view.scaleEffect(CGFloat(s))) }
             return view
         case "rotationEffect":
             return AnyView(view.rotationEffect(.degrees(angleDegrees(token) ?? 0)))
         case "zIndex":
-            if let token, let z = Double(token) { return AnyView(view.zIndex(z)) }
+            if let z = renderFinite(token.flatMap(Double.init), maximum: RenderViewLimits.maxDimension) { return AnyView(view.zIndex(z)) }
             return view
         case "brightness":
-            return AnyView(view.brightness(token.flatMap(Double.init) ?? 0))
+            return AnyView(view.brightness(renderFinite(token.flatMap(Double.init), maximum: 100) ?? 0))
         case "contrast":
-            return AnyView(view.contrast(token.flatMap(Double.init) ?? 1))
+            return AnyView(view.contrast(renderFinite(token.flatMap(Double.init), maximum: 100) ?? 1))
         case "saturation":
-            return AnyView(view.saturation(token.flatMap(Double.init) ?? 1))
+            return AnyView(view.saturation(renderFinite(token.flatMap(Double.init), maximum: 100) ?? 1))
         case "grayscale":
-            return AnyView(view.grayscale(token.flatMap(Double.init) ?? 0))
+            return AnyView(view.grayscale(renderFinite(token.flatMap(Double.init), maximum: 1) ?? 0))
         case "clipShape":
             return applyClipShape(token, to: view)
         case "imageScale":
@@ -314,7 +348,9 @@ struct RenderNodeView: View {
             let mode: ContentMode = clean(modifier.value("contentMode")) == "fill" ? .fill : .fit
             // Only apply an explicit ratio when positive; a zero/negative ratio
             // is invalid in SwiftUI, so fall back to mode-only.
-            if let token, let ratio = Double(token), ratio > 0 { return AnyView(view.aspectRatio(CGFloat(ratio), contentMode: mode)) }
+            if let ratio = renderFinite(token.flatMap(Double.init), maximum: RenderViewLimits.maxRatio), ratio > 0 {
+                return AnyView(view.aspectRatio(CGFloat(ratio), contentMode: mode))
+            }
             return AnyView(view.aspectRatio(contentMode: mode))
         case "scaledToFit":
             return AnyView(view.aspectRatio(contentMode: .fit))
@@ -325,7 +361,7 @@ struct RenderNodeView: View {
         case "fixedSize":
             return AnyView(view.fixedSize())
         case "layoutPriority":
-            return AnyView(view.layoutPriority(token.flatMap(Double.init) ?? 0))
+            return AnyView(view.layoutPriority(renderFinite(token.flatMap(Double.init), maximum: RenderViewLimits.maxDimension) ?? 0))
         default:
             return view
         }
@@ -355,12 +391,14 @@ struct RenderNodeView: View {
     private func styledShape(_ shape: some Shape) -> AnyView {
         var resolved = AnyShape(shape)
         if let trim = node.modifiers.first(where: { $0.name == "trim" }) {
-            resolved = AnyShape(resolved.trim(from: CGFloat(modDouble(trim, "from") ?? 0),
-                                              to: CGFloat(modDouble(trim, "to") ?? 1)))
+            resolved = AnyShape(resolved.trim(
+                from: renderCGFloat(modDouble(trim, "from"), maximum: 1, nonnegative: true) ?? 0,
+                to: renderCGFloat(modDouble(trim, "to"), maximum: 1, nonnegative: true) ?? 1
+            ))
         }
         if let stroke = node.modifiers.first(where: { $0.name == "stroke" || $0.name == "strokeBorder" }) {
             let color = dslColor(clean(stroke.firstValue)) ?? .secondary
-            let width = modDouble(stroke, "lineWidth") ?? 1
+            let width = renderNonnegative(modDouble(stroke, "lineWidth"), maximum: RenderViewLimits.maxEffectRadius) ?? 1
             return AnyView(resolved.stroke(color, lineWidth: CGFloat(width)))
         }
         return AnyView(resolved)
@@ -383,7 +421,7 @@ struct RenderNodeView: View {
 
     /// A labeled `Double` argument of a modifier (e.g. `.shadow(radius: 4)`).
     private func modDouble(_ modifier: RenderModifier, _ label: String) -> Double? {
-        modifier.value(label).map { clean($0) ?? $0 }.flatMap { Double($0) }
+        modifier.value(label).map { clean($0) ?? $0 }.flatMap(Double.init).flatMap { renderFinite($0) }
     }
 
     /// Degrees from an angle token like `.degrees(45)` or `.radians(1.5)`.
@@ -391,10 +429,11 @@ struct RenderNodeView: View {
         guard let token else { return nil }
         if let open = token.firstIndex(of: "("), let close = token.lastIndex(of: ")") {
             let inner = String(token[token.index(after: open)..<close])
-            guard let value = Double(inner.trimmingCharacters(in: .whitespaces)) else { return nil }
-            return token.contains("radians") ? value * 180 / .pi : value
+            guard let value = Double(inner.trimmingCharacters(in: .whitespaces)), value.isFinite else { return nil }
+            let degrees = token.contains("radians") ? value * 180 / .pi : value
+            return renderFinite(degrees, maximum: RenderViewLimits.maxAngle)
         }
-        return Double(token)
+        return renderFinite(Double(token), maximum: RenderViewLimits.maxAngle)
     }
 
     /// Resolves a `.clipShape(<Shape>())` token to a clip.
@@ -413,8 +452,10 @@ struct RenderNodeView: View {
     private func applyFrame(_ modifier: RenderModifier, to view: AnyView) -> AnyView {
         func dim(_ label: String) -> CGFloat? {
             guard let raw = modifier.value(label) else { return nil }
-            if raw == ".infinity" || raw == "infinity" { return .infinity }
-            return Double(raw).map { CGFloat($0) }
+            if (raw == ".infinity" || raw == "infinity") && (label == "maxWidth" || label == "maxHeight") {
+                return .infinity
+            }
+            return renderCGFloat(Double(raw), nonnegative: true)
         }
         let alignment = frameAlignment(clean(modifier.value("alignment")))
         return AnyView(
@@ -453,7 +494,9 @@ struct RenderNodeView: View {
         if let range = token.range(of: "size:") {
             let digits = token[range.upperBound...].drop(while: { $0 == " " })
                 .prefix(while: { $0.isNumber || $0 == "." })
-            if let n = Double(digits) { return dslFontSpec(named: nil, size: n, weight: weight, design: design) }
+            if let n = renderNonnegative(Double(digits), maximum: RenderViewLimits.maxFontSize), n > 0 {
+                return dslFontSpec(named: nil, size: n, weight: weight, design: design)
+            }
         }
         let styleNames = [
             "largeTitle", "title3", "title2", "title",

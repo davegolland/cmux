@@ -109,6 +109,19 @@ struct ControlResponseEncoderTests {
         #expect(encoder.encode(.int(1)) == ControlResponseEncoder.encodeFailureResponse)
     }
 
+    @Test func deeplyNestedValuesCollapseBeforeFoundationBridging() {
+        var value: JSONValue = .null
+        for _ in 0...ControlJSONGuard.maximumDepth {
+            value = .array([value])
+        }
+        #expect(encoder.encode(value) == ControlResponseEncoder.encodeFailureResponse)
+    }
+
+    @Test func nonFiniteNumbersCollapseToEncodeFailure() {
+        #expect(encoder.encode(.array([.double(.infinity)])) == ControlResponseEncoder.encodeFailureResponse)
+        #expect(encoder.encode(.array([.double(.nan)])) == ControlResponseEncoder.encodeFailureResponse)
+    }
+
     @Test func okOutputIsByteIdenticalToLegacyEncoderForSortedPayload() throws {
         // Byte-level parity spot check against the legacy implementation
         // (JSONSerialization over a Foundation dictionary).

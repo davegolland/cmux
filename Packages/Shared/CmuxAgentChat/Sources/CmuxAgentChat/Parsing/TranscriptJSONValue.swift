@@ -23,7 +23,9 @@ enum TranscriptJSONValue: Sendable, Equatable, Codable {
     ///
     /// - Parameter jsonLine: The raw line text.
     init?(jsonLine: String) {
+        guard jsonLine.utf8.count <= TranscriptJSONGuard.maximumLineBytes else { return nil }
         let data = Data(jsonLine.utf8)
+        guard TranscriptJSONGuard.isBounded(data) else { return nil }
         guard let value = try? JSONDecoder().decode(TranscriptJSONValue.self, from: data) else {
             return nil
         }
@@ -91,7 +93,11 @@ enum TranscriptJSONValue: Sendable, Equatable, Codable {
     /// The numeric payload as an integer, or `nil` when not a number.
     var int: Int? {
         guard let double else { return nil }
-        return Int(double)
+        // `Int(Double)` traps for non-finite and out-of-range values. A
+        // transcript is mutable input, so a valid JSON number such as
+        // `1e1000` must not be able to terminate the parser process.
+        guard double.isFinite else { return nil }
+        return Int(exactly: double)
     }
 
     /// The object payload, or `nil` when this is not an object.

@@ -57,6 +57,28 @@ struct SocketClientCapabilityTests {
         #expect(parsed.command == command)
     }
 
+    @Test func envelopeRejectsControlAndOversizedInput() {
+        #expect(SocketClientCapabilityEnvelope(capability: "v1.bad\nvalue") == nil)
+        #expect(SocketClientCapabilityEnvelope(
+            capability: String(repeating: "a", count: SocketClientCapabilityCommand.maximumCapabilityBytes + 1)
+        ) == nil)
+
+        let issuer = SocketClientCapabilityAuthority(secret: secret, audience: "com.cmuxterm.test")
+        let capability = issuer.issueCapability(nonce: nonce)
+        #expect(SocketClientCapabilityCommand(
+            "_cmux_capability_v1 \(capability) command\nextra"
+        ) == nil)
+        #expect(SocketClientCapabilityCommand(
+            "_cmux_capability_v1 \(capability) \(String(repeating: "x", count: SocketClientCapabilityCommand.maximumCommandBytes + 1))"
+        ) == nil)
+    }
+
+    @Test func authorityRejectsOversizedCapabilityBeforeParsing() {
+        let issuer = SocketClientCapabilityAuthority(secret: secret, audience: "com.cmuxterm.test")
+        let oversized = String(repeating: "a", count: SocketClientCapabilityCommand.maximumCapabilityBytes + 1)
+        #expect(!issuer.verifies(oversized))
+    }
+
     @Test func secretStoreReusesPersistentSecret() {
         let store = SocketClientCapabilitySecretStore(
             loadSecret: { secret },

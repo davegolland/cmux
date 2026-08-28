@@ -67,7 +67,9 @@ if stopReading {
 }
 
 while let data = channel.receiveMessage() {
-    guard let message = try? decoder.decode(RenderWorkerInbound.self, from: data) else {
+    guard JSONFrameGuard.isBounded(data),
+          let message = try? decoder.decode(RenderWorkerInbound.self, from: data),
+          message.isWithinSecurityLimits() else {
         continue
     }
     switch message {

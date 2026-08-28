@@ -15,8 +15,23 @@ internal import os
 // parser; DispatchSource callbacks publish only immutable Data chunks through
 // the AsyncStream continuation.
 public final class ControlClientAsyncLineReader: @unchecked Sendable {
+    /// Absolute cap for an unterminated line. The request parser applies the
+    /// same bound to v2 JSON, and keeping the transport cap no larger prevents
+    /// an authenticated peer from retaining extra bytes before parsing.
+    public static let maximumBufferedBytes = 8 * 1024 * 1024
+
     private final class SourceBox: @unchecked Sendable {
         var source: (any DispatchSourceRead)?
+    }
+
+    /// The authorization deadline and byte counter are touched by the
+    /// connection task and by `clearLimits()`/the deadline task. Keep the
+    /// transition atomic so a concurrent authorization update cannot reset a
+    /// counter halfway through a chunk and bypass the preauthorization cap.
+    private struct LimitState: Sendable {
+        var limits: ControlClientLineReadLimits?
+        var bytesRead = 0
+        var deadlineUptimeNanoseconds: UInt64?
     }
 
     private let socket: Int32
@@ -30,16 +45,10 @@ public final class ControlClientAsyncLineReader: @unchecked Sendable {
     private var pendingBytes: [UInt8] = []
     private var pendingStartIndex = 0
     private var newlineSearchIndex = 0
-    private var limits: ControlClientLineReadLimits?
-    private var limitedBytesRead = 0
-    private var deadlineUptimeNanoseconds: UInt64? = nil
     private var deadlineTask: Task<Void, Never>? = nil
     private let monotonicNowNanoseconds: @Sendable () -> UInt64
     private let maximumBufferedBytes: Int
-    // The deadline task and the single reader task may finish/cancel on
-    // different executors. This tiny gate protects only the active-limit bit;
-    // command buffering remains owned by the reader task.
-    private let limitsActive: OSAllocatedUnfairLock<Bool>
+    private let limitState: OSAllocatedUnfairLock<LimitState>
 
     /// Creates an async reader over a non-blocking descriptor.
     ///
@@ -54,12 +63,17 @@ public final class ControlClientAsyncLineReader: @unchecked Sendable {
         socket: Int32,
         initialLimits: ControlClientLineReadLimits? = nil,
         authorizationRevocationSignal: SocketAuthorizationRevocationSignal? = nil,
-        maximumBufferedBytes: Int = 16 * 1024 * 1024,
+        maximumBufferedBytes: Int = 8 * 1024 * 1024,
         monotonicNowNanoseconds: (@Sendable () -> UInt64)? = nil
     ) {
         self.socket = socket
-        self.maximumBufferedBytes = max(1, maximumBufferedBytes)
-        self.limitsActive = OSAllocatedUnfairLock(initialState: initialLimits != nil)
+        self.maximumBufferedBytes = min(
+            max(1, maximumBufferedBytes),
+            Self.maximumBufferedBytes
+        )
+        self.limitState = OSAllocatedUnfairLock(
+            initialState: LimitState(limits: initialLimits)
+        )
         self.monotonicNowNanoseconds = monotonicNowNanoseconds ?? {
             DispatchTime.now().uptimeNanoseconds
         }
@@ -125,13 +139,14 @@ public final class ControlClientAsyncLineReader: @unchecked Sendable {
             revocationSource = nil
         }
 
-        limits = initialLimits
         if let initialLimits {
             let milliseconds = UInt64(clamping: max(0, initialLimits.timeoutMilliseconds))
             let (duration, overflowed) = milliseconds.multipliedReportingOverflow(by: 1_000_000)
             let now = self.monotonicNowNanoseconds()
             let (deadline, additionOverflowed) = now.addingReportingOverflow(duration)
-            deadlineUptimeNanoseconds = overflowed || additionOverflowed ? .max : deadline
+            limitState.withLock {
+                $0.deadlineUptimeNanoseconds = overflowed || additionOverflowed ? .max : deadline
+            }
             if !overflowed {
                 let deadlineContinuation = continuation
                 deadlineTask = Task { [weak self] in
@@ -140,7 +155,7 @@ public final class ControlClientAsyncLineReader: @unchecked Sendable {
                     } catch {
                         return
                     }
-                    guard self?.limitsActive.withLock({ $0 }) == true else { return }
+                    guard self?.limitState.withLock({ $0.limits != nil }) == true else { return }
                     deadlineContinuation.finish()
                 }
             }
@@ -160,10 +175,11 @@ public final class ControlClientAsyncLineReader: @unchecked Sendable {
 
     /// Removes preauthorization limits after the peer proves authorization.
     public func clearLimits() {
-        limits = nil
-        limitsActive.withLock { $0 = false }
-        limitedBytesRead = 0
-        deadlineUptimeNanoseconds = nil
+        limitState.withLock {
+            $0.limits = nil
+            $0.bytesRead = 0
+            $0.deadlineUptimeNanoseconds = nil
+        }
         deadlineTask?.cancel()
         deadlineTask = nil
     }
@@ -206,11 +222,14 @@ public final class ControlClientAsyncLineReader: @unchecked Sendable {
             )
             guard let chunk = nextChunk else { return nil }
             guard !chunk.isEmpty else { continue }
-            if limitsActive.withLock({ $0 }), let limits {
-                let (total, overflowed) = limitedBytesRead.addingReportingOverflow(chunk.count)
-                guard !overflowed, total <= limits.maximumBytes else { return nil }
-                limitedBytesRead = total
+            let acceptedChunk = limitState.withLock { state -> Bool in
+                guard let limits = state.limits else { return true }
+                let (total, overflowed) = state.bytesRead.addingReportingOverflow(chunk.count)
+                guard !overflowed, total <= limits.maximumBytes else { return false }
+                state.bytesRead = total
+                return true
             }
+            guard acceptedChunk else { return nil }
             pendingBytes.append(contentsOf: chunk)
             guard pendingBytes.count - pendingStartIndex <= maximumBufferedBytes else {
                 return nil
@@ -228,8 +247,10 @@ public final class ControlClientAsyncLineReader: @unchecked Sendable {
     }
 
     private var deadlineHasNotExpired: Bool {
-        guard let deadlineUptimeNanoseconds else { return true }
-        return monotonicNowNanoseconds() < deadlineUptimeNanoseconds
+        limitState.withLock { state in
+            guard let deadline = state.deadlineUptimeNanoseconds else { return true }
+            return monotonicNowNanoseconds() < deadline
+        }
     }
 
     private func nextBareNewlineIndex() -> Int? {
@@ -316,7 +337,9 @@ public final class ControlClientAsyncLineReader: @unchecked Sendable {
     ) {
         var buffer = [UInt8](repeating: 0, count: 4096)
         while true {
-            let count = read(socket, &buffer, buffer.count)
+            let count = buffer.withUnsafeMutableBytes { rawBuffer in
+                read(socket, rawBuffer.baseAddress, rawBuffer.count)
+            }
             if count > 0 {
                 if case .dropped = continuation.yield(Data(buffer[0..<count])) {
                     continuation.finish()
@@ -344,22 +367,101 @@ public final class ControlClientAsyncLineReader: @unchecked Sendable {
 // @unchecked Sendable is safe because one connection task performs all writes;
 // the one-shot writable source communicates only through its continuation.
 public final class ControlClientAsyncWriter: @unchecked Sendable {
-    private final class SourceBox: @unchecked Sendable {
-        var source: (any DispatchSourceWrite)?
+    private final class WritableWaitState: @unchecked Sendable {
+        private let lock = NSLock()
+        private var completed = false
+        private var continuation: CheckedContinuation<Bool, Never>?
+        private var writeSource: (any DispatchSourceWrite)?
+        private var timeoutSource: (any DispatchSourceTimer)?
+
+        /// Installs both one-shot sources. Cancellation can race this method,
+        /// so a wait canceled before installation resumes its continuation
+        /// here and cancels the newly-created sources immediately.
+        func install(
+            continuation: CheckedContinuation<Bool, Never>,
+            writeSource: any DispatchSourceWrite,
+            timeoutSource: any DispatchSourceTimer,
+            timeoutNanoseconds: UInt64
+        ) {
+            lock.lock()
+            guard !completed else {
+                lock.unlock()
+                writeSource.cancel()
+                timeoutSource.cancel()
+                continuation.resume(returning: false)
+                return
+            }
+            self.continuation = continuation
+            self.writeSource = writeSource
+            self.timeoutSource = timeoutSource
+            lock.unlock()
+
+            let interval = Int(min(max(1, timeoutNanoseconds), UInt64(Int.max)))
+            timeoutSource.schedule(
+                deadline: .now() + .nanoseconds(interval),
+                repeating: .never
+            )
+            writeSource.activate()
+            timeoutSource.activate()
+        }
+
+        /// Completes a wait exactly once and tears down both sources. Source
+        /// cancel handlers are deliberately empty, so this method is the only
+        /// continuation-resumption path.
+        func finish(_ result: Bool) {
+            lock.lock()
+            guard !completed else {
+                lock.unlock()
+                return
+            }
+            completed = true
+            let continuation = self.continuation
+            self.continuation = nil
+            let writeSource = self.writeSource
+            self.writeSource = nil
+            let timeoutSource = self.timeoutSource
+            self.timeoutSource = nil
+            lock.unlock()
+
+            writeSource?.cancel()
+            timeoutSource?.cancel()
+            continuation?.resume(returning: result)
+        }
     }
 
     private let socket: Int32
+    /// Overall time allowed for one response write. This is an absolute
+    /// budget, not a per-EAGAIN retry delay, so a slow reader cannot keep a
+    /// connection alive by accepting one byte before every retry deadline.
+    private let writableWaitTimeoutNanoseconds: UInt64
+
+    /// Default overall response-write deadline.
+    public static let defaultWritableWaitTimeoutNanoseconds: UInt64 = 5_000_000_000
+    /// Absolute ceiling for a caller-provided response-write deadline.
+    public static let maximumWritableWaitTimeoutNanoseconds: UInt64 = 60_000_000_000
 
     /// Creates a writer over a non-blocking descriptor.
-    public init(socket: Int32) {
+    public init(
+        socket: Int32,
+        writableWaitTimeoutNanoseconds: UInt64 = ControlClientAsyncWriter.defaultWritableWaitTimeoutNanoseconds
+    ) {
         self.socket = socket
+        self.writableWaitTimeoutNanoseconds = min(
+            max(1, writableWaitTimeoutNanoseconds),
+            Self.maximumWritableWaitTimeoutNanoseconds
+        )
         _ = Self.makeNonBlocking(socket)
     }
 
     /// Writes all bytes, suspending on `EAGAIN`; returns false after EOF,
-    /// cancellation, or a non-retryable write error.
+    /// cancellation, deadline expiry, or a non-retryable write error.
     public func writeAll(_ data: Data) async -> Bool {
         var offset = 0
+        let now = DispatchTime.now().uptimeNanoseconds
+        let (deadline, deadlineOverflowed) = now.addingReportingOverflow(
+            writableWaitTimeoutNanoseconds
+        )
+        let writeDeadline = deadlineOverflowed ? UInt64.max : deadline
         while offset < data.count, !Task.isCancelled {
             let written = data.withUnsafeBytes { rawBuffer -> Int in
                 guard let baseAddress = rawBuffer.baseAddress else { return 0 }
@@ -375,7 +477,11 @@ public final class ControlClientAsyncWriter: @unchecked Sendable {
             }
             if written < 0, errno == EINTR { continue }
             if written < 0, errno == EAGAIN || errno == EWOULDBLOCK {
-                guard await waitForWritable() else { return false }
+                let current = DispatchTime.now().uptimeNanoseconds
+                guard current < writeDeadline else { return false }
+                guard await waitForWritable(timeoutNanoseconds: writeDeadline - current) else {
+                    return false
+                }
                 continue
             }
             return false
@@ -385,7 +491,7 @@ public final class ControlClientAsyncWriter: @unchecked Sendable {
 
     /// Cancels future write notifications.
     public func cancel() {
-        // Each would-block wait owns a one-shot source and observes task
+        // Each would-block wait owns one-shot sources and observes task
         // cancellation. There is no persistent writable source to suspend.
     }
 
@@ -396,32 +502,35 @@ public final class ControlClientAsyncWriter: @unchecked Sendable {
         return nil
     }
 
-    private func waitForWritable() async -> Bool {
-        let stream = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
-        let streamContinuation = stream.continuation
-        let sourceBox = SourceBox()
-        let writeSource = DispatchSource.makeWriteSource(
-            fileDescriptor: socket,
-            queue: DispatchQueue.global(qos: .utility)
-        )
-        writeSource.setEventHandler { [streamContinuation, sourceBox] in
-            streamContinuation.yield(())
-            streamContinuation.finish()
-            sourceBox.source?.cancel()
-        }
-        writeSource.setCancelHandler {
-            streamContinuation.finish()
-        }
-        sourceBox.source = writeSource
-        writeSource.activate()
-
-        var iterator = stream.stream.makeAsyncIterator()
-        let writable: Void? = await withTaskCancellationHandler {
-            await iterator.next()
-        } onCancel: {
-            writeSource.cancel()
-            streamContinuation.finish()
-        }
-        return writable != nil
+    private func waitForWritable(timeoutNanoseconds: UInt64) async -> Bool {
+        guard timeoutNanoseconds > 0 else { return false }
+        let state = WritableWaitState()
+        return await withTaskCancellationHandler(operation: {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                let writeSource = DispatchSource.makeWriteSource(
+                    fileDescriptor: socket,
+                    queue: DispatchQueue.global(qos: .utility)
+                )
+                let timeoutSource = DispatchSource.makeTimerSource(
+                    queue: DispatchQueue.global(qos: .utility)
+                )
+                writeSource.setEventHandler { [state] in
+                    state.finish(true)
+                }
+                writeSource.setCancelHandler {}
+                timeoutSource.setEventHandler { [state] in
+                    state.finish(false)
+                }
+                timeoutSource.setCancelHandler {}
+                state.install(
+                    continuation: continuation,
+                    writeSource: writeSource,
+                    timeoutSource: timeoutSource,
+                    timeoutNanoseconds: timeoutNanoseconds
+                )
+            }
+        }, onCancel: {
+            state.finish(false)
+        })
     }
 }
