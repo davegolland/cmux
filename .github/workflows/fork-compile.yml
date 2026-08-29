@@ -183,3 +183,59 @@ jobs:
           name: packages-${{ github.run_id }}
           path: packages.log
           if-no-files-found: ignore
+
+  app:
+    runs-on: macos-26
+    timeout-minutes: 120
+    env:
+      CMUX_SKIP_ZIG_BUILD: "1"
+      CMUX_ALLOW_UNSIGNED_DEV_APP: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Select Xcode
+        run: |
+          set -euo pipefail
+          ./scripts/select-ci-xcode.sh
+          xcodebuild -version
+
+      - name: Capture Ghostty revision
+        id: ghostty-revision
+        run: echo "sha=$(git -C ghostty rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache GhosttyKit.xcframework
+        id: cache-ghosttykit
+        uses: actions/cache@v4
+        with:
+          path: GhosttyKit.xcframework
+          key: ghosttykit-sentry-off-v1-${{ steps.ghostty-revision.outputs.sha }}
+
+      - name: Download pre-built GhosttyKit.xcframework
+        if: steps.cache-ghosttykit.outputs.cache-hit != 'true'
+        run: ./scripts/download-prebuilt-ghosttykit.sh
+
+      - name: Install Rust
+        run: ./scripts/install-rust-ci.sh
+
+      - name: Build tagged app with reload.sh
+        run: |
+          set -euo pipefail
+          ./scripts/reload.sh --tag terminal-math 2>&1 | tee reload.log | tail -40
+          APP="$HOME/Library/Developer/Xcode/DerivedData/cmux-terminal-math/Build/Products/Debug/cmux DEV terminal-math.app"
+          ls -la "$APP" >/dev/null
+          /usr/bin/codesign --verify --verbose=2 "$APP" 2>&1 | tail -3 || true
+          ditto -c -k --keepParent --sequesterRsrc "$APP" cmux-DEV-terminal-math.zip
+          ls -la cmux-DEV-terminal-math.zip
+
+      - name: Upload app
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cmux-DEV-terminal-math-${{ github.run_id }}
+          path: |
+            cmux-DEV-terminal-math.zip
+            reload.log
+          if-no-files-found: ignore
