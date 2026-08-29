@@ -138,4 +138,42 @@ struct TerminalMathByteGateTests {
             gate.consume(raw.bindMemory(to: UInt8.self))
         }
     }
+
+    @Test("Delimiters on the alternate screen do not fire; leaving it fires once")
+    func alternateScreenSuppressesUntilExit() {
+        var gate = TerminalMathByteGate()
+        consume("\u{1B}[?1049h", into: &gate)
+        #expect(gate.isAlternateScreen)
+        consume("vim shows $x$ and \\(y\\) here", into: &gate)
+        #expect(gate.candidateRevision == 0)
+        consume("\u{1B}[?1049l", into: &gate)
+        #expect(!gate.isAlternateScreen)
+        #expect(gate.candidateRevision == 1)
+        consume("back on primary $z$", into: &gate)
+        #expect(gate.candidateRevision == 2)
+    }
+
+    @Test("Alternate screen mode 47 and 1047 are tracked, and a private-mode set inside a chunk suppresses the rest")
+    func legacyAlternateScreenModes() {
+        var gate = TerminalMathByteGate()
+        consume("price $5 \u{1B}[?47h$x$", into: &gate)
+        #expect(gate.candidateRevision == 1)
+        #expect(gate.isAlternateScreen)
+        consume("\u{1B}[?47l", into: &gate)
+        #expect(gate.candidateRevision == 2)
+        consume("\u{1B}[?1047h$q$\u{1B}[?1047l", into: &gate)
+        #expect(gate.candidateRevision == 3)
+        #expect(!gate.isAlternateScreen)
+    }
+
+    @Test("Non-private or intermediate CSI sequences with 1049 do not change the screen")
+    func unrelatedSequencesDoNotToggleAlternateScreen() {
+        var gate = TerminalMathByteGate()
+        consume("\u{1B}[1049h\u{1B}[?1049$p", into: &gate)
+        #expect(!gate.isAlternateScreen)
+        consume("\u{1B}[?1049l", into: &gate)
+        #expect(gate.candidateRevision == 0)
+        consume("\u{1B}[?25;1049h", into: &gate)
+        #expect(gate.isAlternateScreen)
+    }
 }

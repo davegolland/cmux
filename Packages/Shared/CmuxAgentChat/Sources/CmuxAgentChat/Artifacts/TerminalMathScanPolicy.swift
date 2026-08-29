@@ -21,8 +21,13 @@
 ///   Viewport and raster scans re-validate placement geometry only.
 /// - After ``idleScansBeforeRelease`` consecutive frame-driven scans that
 ///   found nothing while no candidate was pending, the demand is released so
-///   an idle terminal costs nothing. A later candidate or viewport change
-///   retains it again.
+///   an idle terminal costs nothing. A later candidate retains it again.
+/// - A viewport change with nothing on screen only probes: one scan at most
+///   every ``idleProbeCooldown`` without retaining demand, so scrollback
+///   growth during bulk output stays cheap while scrolling back to a formula
+///   still finds it. A probe that finds placements retains demand again.
+/// - Enabling the feature rescans at once (no tick is needed: nothing is
+///   being parsed) and re-arms nothing.
 /// - The alternate screen never shows overlays: a scan there clears the
 ///   overlay and counts as "found nothing".
 public struct TerminalMathScanPolicy: Sendable, Equatable {
@@ -74,6 +79,8 @@ public struct TerminalMathScanPolicy: Sendable, Equatable {
 
     /// Minimum spacing between scans while no candidate is pending, in seconds.
     public static let scanCooldown: Double = 0.1
+    /// Minimum spacing between viewport probes while nothing is on screen.
+    public static let idleProbeCooldown: Double = 0.5
     /// Empty frame-driven scans (no candidate pending) before demand is released.
     public static let idleScansBeforeRelease = 2
 
@@ -89,8 +96,10 @@ public struct TerminalMathScanPolicy: Sendable, Equatable {
     public private(set) var idleFrameScans = 0
     /// When the last scan completed, or nil before the first scan.
     public private(set) var lastScanAt: Double?
+    /// Reason of the scheduled trailing scan, or nil when none is pending.
+    public private(set) var trailingScanReason: ScanReason?
     /// A trailing scan is scheduled and not yet due.
-    public private(set) var trailingScanPending = false
+    public var trailingScanPending: Bool { trailingScanReason != nil }
     /// Reason of the scan whose completion is awaited.
     public private(set) var activeScanReason: ScanReason?
 
@@ -109,16 +118,26 @@ public struct TerminalMathScanPolicy: Sendable, Equatable {
             }
             return throttledScan(.frame, now: now)
         case .trailingScanDue:
-            trailingScanPending = false
-            guard isEnabled, hasCandidate || hasPlacements || demandRetained else { return [] }
-            return startScan(.frame)
+            let reason = trailingScanReason ?? .frame
+            trailingScanReason = nil
+            guard isEnabled else { return [] }
+            // A candidate that arrived meanwhile owns the next frame-driven
+            // scan; a trailing scan now would read the grid before that frame.
+            guard !hasCandidate else { return [] }
+            guard hasPlacements || demandRetained || reason == .viewportChanged else { return [] }
+            return startScan(reason)
         case .viewportChanged(let now):
             guard isEnabled else { return [] }
-            var actions = retainDemandIfNeeded()
             // A pending candidate already guarantees a frame-driven scan.
-            guard !hasCandidate else { return actions }
-            actions += throttledScan(.viewportChanged, now: now)
-            return actions
+            guard !hasCandidate else { return [] }
+            if hasPlacements {
+                var actions = retainDemandIfNeeded()
+                actions += throttledScan(.viewportChanged, now: now, cooldown: Self.scanCooldown)
+                return actions
+            }
+            // Nothing on screen: probe without demand so scrollback growth
+            // during bulk output costs at most one export per cooldown.
+            return throttledScan(.viewportChanged, now: now, cooldown: Self.idleProbeCooldown)
         case .enabled(let enabled):
             return setEnabled(enabled)
         case .scanCompleted(let found, let isAlternateScreen, let now):
@@ -144,9 +163,13 @@ public struct TerminalMathScanPolicy: Sendable, Equatable {
         if enabled {
             // Always one rescan, even when already enabled: a controller
             // created while the setting was off starts enabled and may be
-            // looking at math that arrived under the closed gate.
+            // looking at math that arrived under the closed gate. The scan
+            // runs at once: a tick does not wake Ghostty's renderer, so an
+            // idle surface would never deliver the frame a candidate waits for.
             isEnabled = true
-            return noteCandidate()
+            var actions = retainDemandIfNeeded()
+            actions += startScan(.viewportChanged)
+            return actions
         }
         var actions: [Action] = [.clearOverlay]
         if demandRetained {
@@ -166,6 +189,10 @@ public struct TerminalMathScanPolicy: Sendable, Equatable {
         var actions: [Action] = []
         if isAlternateScreen {
             actions.append(.clearOverlay)
+        }
+        if effectiveFound {
+            // A probe or an enable found math: frames must now re-validate it.
+            actions += retainDemandIfNeeded()
         }
         guard reason == .frame else { return actions }
 
@@ -198,15 +225,19 @@ public struct TerminalMathScanPolicy: Sendable, Equatable {
         return [.scanNow(reason)]
     }
 
-    /// Scans now unless a scan completed inside the cooldown, in which case a
+    /// Scans now unless a scan completed inside `cooldown`, in which case a
     /// single trailing scan is scheduled for the end of the cooldown.
-    private mutating func throttledScan(_ reason: ScanReason, now: Double) -> [Action] {
+    private mutating func throttledScan(
+        _ reason: ScanReason,
+        now: Double,
+        cooldown: Double = TerminalMathScanPolicy.scanCooldown
+    ) -> [Action] {
         if let lastScanAt {
             let elapsed = now - lastScanAt
-            if elapsed < Self.scanCooldown {
+            if elapsed < cooldown {
                 guard !trailingScanPending else { return [] }
-                trailingScanPending = true
-                return [.scheduleTrailingScan(after: Self.scanCooldown - max(0, elapsed))]
+                trailingScanReason = reason
+                return [.scheduleTrailingScan(after: cooldown - max(0, elapsed))]
             }
         }
         return startScan(reason)

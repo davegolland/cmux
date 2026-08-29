@@ -164,14 +164,52 @@ struct TerminalMathScanPolicyTests {
         #expect(policy.handle(.frame(now: 3)) == [.scanNow(.frame)])
     }
 
-    @Test("a viewport change after demand was released retains it again and scans")
-    func viewportChangedRetainsDemandAgain() {
+    @Test("a viewport change with nothing on screen probes without demand")
+    func viewportChangedProbesWithoutDemand() {
         var policy = Policy()
-        #expect(policy.handle(.viewportChanged(now: 5)) == [.retainDemand, .scanNow(.viewportChanged)])
-        #expect(policy.demandRetained)
-        _ = policy.handle(.scanCompleted(found: false, isAlternateScreen: false, now: 5))
+        #expect(policy.handle(.viewportChanged(now: 5)) == [.scanNow(.viewportChanged)])
+        #expect(!policy.demandRetained)
+        #expect(policy.handle(.scanCompleted(found: false, isAlternateScreen: false, now: 5)).isEmpty)
         #expect(!policy.hasPlacements)
+        #expect(!policy.demandRetained)
         #expect(policy.idleFrameScans == 0)
+    }
+
+    @Test("idle probes are spaced by the idle probe cooldown, not the scan cooldown")
+    func idleProbesAreSpacedOut() {
+        var policy = Policy()
+        _ = policy.handle(.viewportChanged(now: 5))
+        _ = policy.handle(.scanCompleted(found: false, isAlternateScreen: false, now: 5))
+        // Inside the scan cooldown and the idle cooldown: one trailing probe.
+        let delay = trailingDelay(policy.handle(.viewportChanged(now: 5.2)))
+        #expect(abs((delay ?? -1) - (Policy.idleProbeCooldown - 0.2)) < 1e-9)
+        #expect(policy.trailingScanReason == .viewportChanged)
+        #expect(policy.handle(.viewportChanged(now: 5.3)).isEmpty)
+        // The trailing probe runs as a viewport scan: no candidate clear, no re-arm.
+        #expect(policy.handle(.trailingScanDue(now: 5.5)) == [.scanNow(.viewportChanged)])
+        #expect(policy.handle(.scanCompleted(found: false, isAlternateScreen: false, now: 5.5)).isEmpty)
+        #expect(!policy.demandRetained)
+    }
+
+    @Test("a probe that finds math retains demand so frames re-validate it")
+    func probeThatFindsMathRetainsDemand() {
+        var policy = Policy()
+        _ = policy.handle(.viewportChanged(now: 5))
+        #expect(policy.handle(.scanCompleted(found: true, isAlternateScreen: false, now: 5)) == [.retainDemand])
+        #expect(policy.demandRetained)
+        #expect(policy.hasPlacements)
+        #expect(policy.handle(.frame(now: 6)) == [.scanNow(.frame)])
+    }
+
+    @Test("a trailing scan yields to a candidate that arrived meanwhile")
+    func trailingScanYieldsToCandidate() {
+        var policy = withPlacements(now: 1)
+        #expect(trailingDelay(policy.handle(.frame(now: 1.05))) != nil)
+        #expect(policy.handle(.candidate) == [.requestTick])
+        #expect(policy.handle(.trailingScanDue(now: 1.1)).isEmpty)
+        #expect(!policy.trailingScanPending)
+        #expect(policy.hasCandidate)
+        #expect(policy.handle(.frame(now: 1.2)) == [.scanNow(.frame)])
     }
 
     @Test("a viewport change inside the cooldown is coalesced into the trailing scan")
@@ -218,18 +256,21 @@ struct TerminalMathScanPolicyTests {
         #expect(policy.handle(.enabled(false)) == [.clearOverlay])
     }
 
-    @Test("enabling behaves like a candidate so math already on screen is rescanned")
+    @Test("enabling rescans at once so math already on screen comes back without a frame")
     func enableRescansOnce() {
         var policy = Policy()
         _ = policy.handle(.enabled(false))
-        #expect(policy.handle(.enabled(true)) == [.retainDemand, .requestTick])
+        #expect(policy.handle(.enabled(true)) == [.retainDemand, .scanNow(.viewportChanged)])
         #expect(policy.isEnabled)
-        #expect(policy.hasCandidate)
-        #expect(policy.handle(.frame(now: 1)) == [.scanNow(.frame)])
+        #expect(!policy.hasCandidate)
+        // The rescan re-arms nothing and keeps the frame path alive.
+        #expect(policy.handle(.scanCompleted(found: true, isAlternateScreen: false, now: 1)).isEmpty)
+        #expect(policy.hasPlacements)
+        #expect(policy.handle(.frame(now: 2)) == [.scanNow(.frame)])
 
         // Enabling an already-enabled policy still rescans once.
         var fresh = Policy()
-        #expect(fresh.handle(.enabled(true)) == [.retainDemand, .requestTick])
+        #expect(fresh.handle(.enabled(true)) == [.retainDemand, .scanNow(.viewportChanged)])
     }
 
     @Test("the alternate screen clears the overlay and counts as found nothing")

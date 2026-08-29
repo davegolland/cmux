@@ -277,4 +277,39 @@ struct TerminalMathGridScannerTests {
         #expect(placements.first?.continuationRows.count == 1)
         #expect(TerminalMathGridScanner.maxStitchedRows == 16)
     }
+
+    @Test("the stitch cap extends over rows that hold delimiters so a closer is never orphaned")
+    func stitchCapExtendsOverDelimiterRows() {
+        let columns = 10
+        let filler = String(repeating: "x", count: columns)
+        var rows = Array(repeating: filler, count: 40)
+        // Opener on row 15 (the last row inside the soft cap), closer on
+        // row 16, and a stray `$` later on row 16 that an orphaned closer
+        // would otherwise pair with.
+        rows[15] = "ab $x^2 + "
+        rows[16] = "y^2$ is $5"
+        let placements = TerminalMathGridScanner().placements(rows: rows, columns: columns, cursor: nil)
+        #expect(placements.count == 1)
+        #expect(placements.first?.source == "$x^2 + y^2$")
+        #expect(placements.first?.row == 15)
+        #expect(placements.first?.continuationRows.count == 1)
+    }
+
+    @Test("the hard stitch cap still cuts a run of delimiter rows")
+    func hardStitchCapCuts() {
+        let columns = 10
+        let rows = Array(repeating: "$ a b c d ", count: 40)
+        // Every row fills the width and holds a `$`; the scan must finish.
+        _ = TerminalMathGridScanner().placements(rows: rows, columns: columns, cursor: nil)
+        #expect(TerminalMathGridScanner.hardMaxStitchedRows == 32)
+    }
+
+    @Test("a row with an escape scalar is stripped before its ranges are mapped")
+    func rowWithEscapeIsStripped() {
+        let rows = ["\u{1B}[31mred\u{1B}[0m $x$"]
+        let placements = TerminalMathGridScanner().placements(rows: rows, columns: 40, cursor: nil)
+        #expect(placements.count == 1)
+        #expect(placements.first?.source == "$x$")
+        #expect(placements.first?.startColumn == 4)
+    }
 }

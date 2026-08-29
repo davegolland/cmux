@@ -137,7 +137,9 @@ final class TerminalMathRasterizer {
     /// `\int_0^\infty e^{-x^2}\,dx = \frac{\sqrt{\pi}}{2}` at 40 pt at
     /// under 300 x 100 CSS px, so 1024 x 512 leaves ample headroom. A
     /// formula whose measured box does not fit is rejected (cached).
-    private static let canvasSize = CGSize(width: 1024, height: 512)
+    /// Wide enough for a display equation at a zoomed 58 pt terminal font
+    /// (the fit rule, not the canvas, decides what a row can show).
+    private static let canvasSize = CGSize(width: 2048, height: 1024)
 
     /// Backoff of the first negative entry for a transient failure.
     static let initialFailureBackoff: TimeInterval = 2
@@ -259,6 +261,12 @@ final class TerminalMathRasterizer {
             await previous?.value
             guard let self else { return }
             if self.needsRender(key) {
+                // Re-check: a cooldown that started while this job waited in
+                // the queue must not rebuild the page.
+                if self.isInCooldown {
+                    self.lastRejectionReason = "rasterizer cooling down after page failures"
+                    return
+                }
                 await self.renderUncontended(key: key)
             }
         }

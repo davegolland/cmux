@@ -284,11 +284,12 @@ final class TerminalMathSurfaceController {
     }
 
     /// Whether display math on `placement` may overhang its neighbour rows:
-    /// both the row above and the row below the first segment are blank (or
-    /// off the grid), so the overhang cannot paint over unpatched text.
+    /// both the row above and the row below the first segment exist on the
+    /// grid and are blank, so the overhang neither paints over unpatched
+    /// text nor gets clipped at the viewport edge.
     private static func allowsOverhang(for placement: TerminalMathPlacement, rows: [String]) -> Bool {
         func isBlank(_ row: Int) -> Bool {
-            guard rows.indices.contains(row) else { return true }
+            guard rows.indices.contains(row) else { return false }
             return rows[row].allSatisfy(\.isWhitespace)
         }
         return isBlank(placement.row - 1) && isBlank(placement.row + 1)
