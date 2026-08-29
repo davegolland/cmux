@@ -131,3 +131,51 @@ jobs:
             build-tests.log
             test.log
           if-no-files-found: ignore
+
+  packages:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Select Xcode
+        run: |
+          set -euo pipefail
+          ./scripts/select-ci-xcode.sh
+          xcodebuild -version
+
+      - name: Capture Ghostty revision
+        id: ghostty-revision
+        run: echo "sha=$(git -C ghostty rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache GhosttyKit.xcframework
+        id: cache-ghosttykit
+        uses: actions/cache@v4
+        with:
+          path: GhosttyKit.xcframework
+          key: ghosttykit-sentry-off-v1-${{ steps.ghostty-revision.outputs.sha }}
+
+      - name: Download pre-built GhosttyKit.xcframework
+        if: steps.cache-ghosttykit.outputs.cache-hit != 'true'
+        run: ./scripts/download-prebuilt-ghosttykit.sh
+
+      - name: Package tests
+        run: |
+          set -euo pipefail
+          run() { echo "== $*"; swift test "$@" 2>&1 | tee -a packages.log | grep -E "Suite .* (passed|failed)|Test .* failed|error:|Executed|passed after|failed after" || true; }
+          run --package-path Packages/Shared/CmuxAgentChat --filter TerminalMath
+          run --package-path Packages/macOS/CmuxTerminalCore --filter TerminalMathByteGate
+          run --package-path Packages/macOS/CmuxSettings
+          run --package-path Packages/macOS/CmuxSettingsUI --filter SettingsRowAnchorResolutionTests
+          ! grep -qE "failed after|error:|\*\* TEST FAILED|Fatal error" packages.log
+
+      - name: Upload package log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ github.run_id }}
+          path: packages.log
+          if-no-files-found: ignore

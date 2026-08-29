@@ -1,2 +1,7 @@
 MarkdownKaTeXTests
-MarkdownMermaidZoomTests
+TerminalMathRasterizerTests
+TerminalMathOverlayLayoutTests
+CommandPaletteSettingsToggleTests
+KeyboardShortcutContextTests
+SystemWideHotkeyShortcutPolicyTests
+TerminalClearScreenKeepScrollbackTests
