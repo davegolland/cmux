@@ -220,6 +220,12 @@ jobs:
       - name: Install Rust
         run: ./scripts/install-rust-ci.sh
 
+      - name: Install zig (reload.sh checks for it even with CMUX_SKIP_ZIG_BUILD)
+        run: |
+          set -euo pipefail
+          brew install zig
+          zig version
+
       - name: Build tagged app with reload.sh
         run: |
           set -euo pipefail
