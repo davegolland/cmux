@@ -34,7 +34,7 @@ import Testing
         // 10 cells wide = 80pt patch; a 40x14 raster fits without scaling.
         let raster = TerminalMathOverlayLayout.RasterSize(widthPt: 40, heightPt: 14, baselinePt: 10)
         let frame = try #require(TerminalMathOverlayLayout.frame(
-            for: placement(), raster: raster, metrics: metrics, isDisplay: false
+            for: placement(), raster: raster, metrics: metrics, isDisplay: false, allowsOverhang: true
         ))
         #expect(frame.scale == CGFloat(1))
         #expect(frame.patchRects == [CGRect(x: 4 + 3 * 8, y: 6 + 2 * 16, width: 80, height: 16)])
@@ -50,7 +50,7 @@ import Testing
         // becomes 15pt, above the 0.7 * 16 = 11.2pt floor.
         let raster = TerminalMathOverlayLayout.RasterSize(widthPt: 160, heightPt: 30, baselinePt: 20)
         let frame = try #require(TerminalMathOverlayLayout.frame(
-            for: placement(), raster: raster, metrics: metrics, isDisplay: true
+            for: placement(), raster: raster, metrics: metrics, isDisplay: true, allowsOverhang: true
         ))
         #expect(frame.scale == CGFloat(0.5))
         #expect(frame.imageRect.size == CGSize(width: 80, height: 15))
@@ -61,7 +61,7 @@ import Testing
         // Scaling 320 -> 80 is 0.25; 40pt tall becomes 10pt < 11.2pt.
         let raster = TerminalMathOverlayLayout.RasterSize(widthPt: 320, heightPt: 40, baselinePt: 30)
         #expect(TerminalMathOverlayLayout.frame(
-            for: placement(), raster: raster, metrics: metrics, isDisplay: false
+            for: placement(), raster: raster, metrics: metrics, isDisplay: false, allowsOverhang: true
         ) == nil)
     }
 
@@ -70,11 +70,11 @@ import Testing
         // 0.8 (12.8pt, above the floor); display math would keep it natural.
         let raster = TerminalMathOverlayLayout.RasterSize(widthPt: 20, heightPt: 20, baselinePt: 14)
         let inline = try #require(TerminalMathOverlayLayout.frame(
-            for: placement(), raster: raster, metrics: metrics, isDisplay: false
+            for: placement(), raster: raster, metrics: metrics, isDisplay: false, allowsOverhang: true
         ))
         #expect(inline.scale == CGFloat(0.8))
         let display = try #require(TerminalMathOverlayLayout.frame(
-            for: placement(isDisplay: true), raster: raster, metrics: metrics, isDisplay: true
+            for: placement(isDisplay: true), raster: raster, metrics: metrics, isDisplay: true, allowsOverhang: true
         ))
         #expect(display.scale == CGFloat(1))
         // Display overhang: 2pt above and below the row.
@@ -82,12 +82,53 @@ import Testing
         #expect(display.imageRect.maxY == CGFloat(56))
     }
 
+    @Test func displayMathNextToTextRowsGetsTheInlineBudget() throws {
+        // Same 20pt raster; with a neighbour row that has text the overhang is
+        // not allowed, so display math scales like inline math and stays
+        // inside its row.
+        let raster = TerminalMathOverlayLayout.RasterSize(widthPt: 20, heightPt: 20, baselinePt: 14)
+        let clamped = try #require(TerminalMathOverlayLayout.frame(
+            for: placement(isDisplay: true), raster: raster, metrics: metrics, isDisplay: true, allowsOverhang: false
+        ))
+        #expect(clamped.scale == CGFloat(0.8))
+        #expect(clamped.imageRect.minY >= CGFloat(38))
+        #expect(clamped.imageRect.maxY <= CGFloat(54))
+        // A 40pt display raster is squeezed into the 16pt row without
+        // overhang (scale 0.4, exactly one cell, so it stays inside the
+        // patch) but only into the 32pt budget with it (scale 0.8).
+        let tall = TerminalMathOverlayLayout.RasterSize(widthPt: 20, heightPt: 40, baselinePt: 30)
+        let squeezed = try #require(TerminalMathOverlayLayout.frame(
+            for: placement(isDisplay: true), raster: tall, metrics: metrics, isDisplay: true, allowsOverhang: false
+        ))
+        #expect(squeezed.scale == CGFloat(0.4))
+        #expect(squeezed.imageRect.height == CGFloat(16))
+        #expect(squeezed.imageRect.minY == CGFloat(38))
+        let overhung = try #require(TerminalMathOverlayLayout.frame(
+            for: placement(isDisplay: true), raster: tall, metrics: metrics, isDisplay: true, allowsOverhang: true
+        ))
+        #expect(overhung.scale == CGFloat(0.8))
+        #expect(overhung.imageRect.height == CGFloat(32))
+        #expect(overhung.imageRect.minY == CGFloat(30))
+    }
+
+    @Test func overhangFlagIsIgnoredForInlineMath() throws {
+        let raster = TerminalMathOverlayLayout.RasterSize(widthPt: 20, heightPt: 20, baselinePt: 14)
+        let withFlag = try #require(TerminalMathOverlayLayout.frame(
+            for: placement(), raster: raster, metrics: metrics, isDisplay: false, allowsOverhang: true
+        ))
+        let without = try #require(TerminalMathOverlayLayout.frame(
+            for: placement(), raster: raster, metrics: metrics, isDisplay: false, allowsOverhang: false
+        ))
+        #expect(withFlag == without)
+        #expect(withFlag.scale == CGFloat(0.8))
+    }
+
     @Test func smallNaturalRasterIsNotRejectedByTheFloor() throws {
         // The floor only applies when scaling down: a naturally short raster
         // (a lone `x`) is still drawn.
         let raster = TerminalMathOverlayLayout.RasterSize(widthPt: 6, heightPt: 8, baselinePt: 7)
         let frame = try #require(TerminalMathOverlayLayout.frame(
-            for: placement(), raster: raster, metrics: metrics, isDisplay: false
+            for: placement(), raster: raster, metrics: metrics, isDisplay: false, allowsOverhang: true
         ))
         #expect(frame.scale == CGFloat(1))
         #expect(frame.imageRect.height == CGFloat(8))
@@ -101,7 +142,7 @@ import Testing
         )
         let raster = TerminalMathOverlayLayout.RasterSize(widthPt: 30, heightPt: 12, baselinePt: 9)
         let frame = try #require(TerminalMathOverlayLayout.frame(
-            for: wrapped, raster: raster, metrics: metrics, isDisplay: false
+            for: wrapped, raster: raster, metrics: metrics, isDisplay: false, allowsOverhang: true
         ))
         #expect(frame.patchRects == [
             CGRect(x: 4 + 70 * 8, y: 6 + 5 * 16, width: 80, height: 16),
@@ -114,10 +155,10 @@ import Testing
     @Test func rowsGrowDownwardInFlippedCoordinates() throws {
         let raster = TerminalMathOverlayLayout.RasterSize(widthPt: 10, heightPt: 10, baselinePt: 8)
         let top = try #require(TerminalMathOverlayLayout.frame(
-            for: placement(row: 0), raster: raster, metrics: metrics, isDisplay: false
+            for: placement(row: 0), raster: raster, metrics: metrics, isDisplay: false, allowsOverhang: true
         ))
         let lower = try #require(TerminalMathOverlayLayout.frame(
-            for: placement(row: 3), raster: raster, metrics: metrics, isDisplay: false
+            for: placement(row: 3), raster: raster, metrics: metrics, isDisplay: false, allowsOverhang: true
         ))
         #expect(top.patchRects[0].minY == CGFloat(6))
         #expect(lower.patchRects[0].minY == CGFloat(54))
@@ -127,12 +168,12 @@ import Testing
     @Test func degenerateInputsAreRejected() {
         let raster = TerminalMathOverlayLayout.RasterSize(widthPt: 0, heightPt: 10, baselinePt: 8)
         #expect(TerminalMathOverlayLayout.frame(
-            for: placement(), raster: raster, metrics: metrics, isDisplay: false
+            for: placement(), raster: raster, metrics: metrics, isDisplay: false, allowsOverhang: true
         ) == nil)
         let empty = placement(columns: 3..<3)
         let ok = TerminalMathOverlayLayout.RasterSize(widthPt: 10, heightPt: 10, baselinePt: 8)
         #expect(TerminalMathOverlayLayout.frame(
-            for: empty, raster: ok, metrics: metrics, isDisplay: false
+            for: empty, raster: ok, metrics: metrics, isDisplay: false, allowsOverhang: true
         ) == nil)
     }
 }

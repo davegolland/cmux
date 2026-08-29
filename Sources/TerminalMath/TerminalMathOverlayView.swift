@@ -43,11 +43,13 @@ struct TerminalMathGridMetrics: Equatable, Sendable {
 ///
 /// All rects are top-origin (the overlay view is flipped). The fit rule:
 /// the raster is drawn at natural size when its height fits the row budget
-/// (`cellHeight` inline, `2 * cellHeight` for display math, which may overhang
-/// half a cell above and below its row); when it is wider than the first
-/// segment's patch or taller than the budget it is scaled down uniformly, and
-/// a placement whose scaled height would drop below
-/// ``minimumHeightFactor`` × `cellHeight` is rejected so the raw text stays.
+/// (`cellHeight` inline, `2 * cellHeight` for display math whose neighbour
+/// rows are blank, which may then overhang half a cell above and below its
+/// row); when it is wider than the first segment's patch or taller than the
+/// budget it is scaled down uniformly, and a placement whose scaled height
+/// would drop below ``minimumHeightFactor`` × `cellHeight` is rejected so the
+/// raw text stays. Display math next to rows that contain text gets the
+/// inline budget so the overhang never paints over unpatched glyphs.
 enum TerminalMathOverlayLayout {
     /// Point-size metrics of a raster, decoupled from the image itself.
     struct RasterSize: Equatable, Sendable {
@@ -89,13 +91,17 @@ enum TerminalMathOverlayLayout {
     ///   - placement: The formula's cells on the grid.
     ///   - raster: Natural size of the rendered formula.
     ///   - metrics: Cell geometry of the surface.
-    ///   - isDisplay: Whether to use the display-math height budget.
+    ///   - isDisplay: Whether the placement is display math.
+    ///   - allowsOverhang: Whether the rows above and below the first segment
+    ///     are blank, so a display raster may overhang them. Ignored for
+    ///     inline math.
     /// - Returns: Patch and image rects in top-origin coordinates, or nil.
     static func frame(
         for placement: TerminalMathPlacement,
         raster: RasterSize,
         metrics: TerminalMathGridMetrics,
-        isDisplay: Bool
+        isDisplay: Bool,
+        allowsOverhang: Bool
     ) -> Frame? {
         guard metrics.cellWidth > 0, metrics.cellHeight > 0,
               raster.widthPt > 0, raster.heightPt > 0,
@@ -106,7 +112,7 @@ enum TerminalMathOverlayLayout {
         guard let anchor = patchRects.first, anchor.width > 0 else { return nil }
 
         let maxHeight = metrics.cellHeight
-            * (isDisplay ? displayMaxHeightFactor : inlineMaxHeightFactor)
+            * (isDisplay && allowsOverhang ? displayMaxHeightFactor : inlineMaxHeightFactor)
         let widthScale = anchor.width / raster.widthPt
         let heightScale = maxHeight / raster.heightPt
         let scale = min(1, widthScale, heightScale)

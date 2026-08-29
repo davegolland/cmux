@@ -136,6 +136,198 @@ final class TerminalMathRasterizerTests {
         #expect(rasterizer.renderCount == before + 3)
     }
 
+    // MARK: - Cache limits (G5)
+
+    @Test
+    func entryLimitEvictsTheLeastRecentlyUsedEntry() async throws {
+        rasterizer.clearCache()
+        let savedLimit = rasterizer.cacheEntryLimit
+        defer { rasterizer.cacheEntryLimit = savedLimit }
+        rasterizer.cacheEntryLimit = 2
+        func render(_ source: String) async -> TerminalMathRasterizer.Raster? {
+            await rasterizer.raster(source: source, isDisplay: false, fontSizePt: 13, color: .white, scale: 2)
+        }
+        func cached(_ source: String) -> TerminalMathRasterizer.Raster? {
+            rasterizer.cachedRaster(source: source, isDisplay: false, fontSizePt: 13, color: .white, scale: 2)
+        }
+        let a = try #require(await render("$a$"))
+        _ = try #require(await render("$b$"))
+        // Touch a so b becomes the least recently used.
+        #expect(cached("$a$")?.image === a.image)
+        let c = try #require(await render("$c$"))
+        #expect(cached("$b$") == nil)
+        #expect(cached("$a$")?.image === a.image)
+        #expect(cached("$c$")?.image === c.image)
+        let before = rasterizer.renderCount
+        _ = try #require(await render("$b$"))
+        #expect(rasterizer.renderCount == before + 1)
+        // Re-rendering b evicted a (c was touched more recently than a).
+        #expect(cached("$a$") == nil)
+        #expect(cached("$c$")?.image === c.image)
+    }
+
+    @Test
+    func byteLimitEvictsButKeepsTheEntryJustStored() async throws {
+        rasterizer.clearCache()
+        let savedLimit = rasterizer.cacheByteLimit
+        defer { rasterizer.cacheByteLimit = savedLimit }
+        rasterizer.cacheByteLimit = 1
+        let a = try #require(await rasterizer.raster(
+            source: "$a$", isDisplay: false, fontSizePt: 13, color: .white, scale: 2))
+        #expect(rasterizer.cachedRaster(source: "$a$", isDisplay: false, fontSizePt: 13, color: .white, scale: 2)?.image === a.image)
+        let b = try #require(await rasterizer.raster(
+            source: "$b$", isDisplay: false, fontSizePt: 13, color: .white, scale: 2))
+        #expect(rasterizer.cachedRaster(source: "$a$", isDisplay: false, fontSizePt: 13, color: .white, scale: 2) == nil)
+        #expect(rasterizer.cachedRaster(source: "$b$", isDisplay: false, fontSizePt: 13, color: .white, scale: 2)?.image === b.image)
+        // Storing a zero-byte rejection while still over the byte budget
+        // evicts the bitmap, never the entry just stored.
+        _ = await rasterizer.raster(source: "$\\def\\q{1}$", isDisplay: false, fontSizePt: 13, color: .white, scale: 2)
+        #expect(rasterizer.isCachedRejection(source: "$\\def\\q{1}$", isDisplay: false, fontSizePt: 13, color: .white, scale: 2))
+        #expect(rasterizer.cachedRaster(source: "$b$", isDisplay: false, fontSizePt: 13, color: .white, scale: 2) == nil)
+    }
+
+    // MARK: - Transient failures (G2)
+
+    @Test
+    func transientFailureIsNegativeCachedWithDoublingBackoff() async throws {
+        rasterizer.clearCache()
+        defer { rasterizer.debugResetFailureTracking() }
+        func render() async -> TerminalMathRasterizer.Raster? {
+            await rasterizer.raster(source: "$t$", isDisplay: false, fontSizePt: 13, color: .white, scale: 2)
+        }
+        rasterizer.debugFailNextRender = true
+        #expect(await render() == nil)
+        #expect(rasterizer.lastRejectionReason == "simulated transient failure")
+        // Not a rejection, not a hit: the draw path sees a miss, but a
+        // request inside the backoff returns nil without rendering.
+        #expect(!rasterizer.isCachedRejection(source: "$t$", isDisplay: false, fontSizePt: 13, color: .white, scale: 2))
+        #expect(rasterizer.cachedRaster(source: "$t$", isDisplay: false, fontSizePt: 13, color: .white, scale: 2) == nil)
+        let before = rasterizer.renderCount
+        #expect(await render() == nil)
+        #expect(rasterizer.renderCount == before)
+        rasterizer.clockOffset = 1.5
+        #expect(await render() == nil)
+        #expect(rasterizer.renderCount == before)
+        // Expired (2 s): the next request renders again; make it fail a
+        // second time so the backoff doubles to 4 s.
+        rasterizer.clockOffset = 2.5
+        rasterizer.debugFailNextRender = true
+        #expect(await render() == nil)
+        rasterizer.clockOffset = 2.5 + 3
+        #expect(await render() == nil)
+        #expect(rasterizer.renderCount == before)
+        rasterizer.clockOffset = 2.5 + 4.5
+        let raster = try #require(await render())
+        #expect(raster.widthPt > 0)
+        #expect(rasterizer.renderCount == before + 1)
+        #expect(rasterizer.cachedRaster(source: "$t$", isDisplay: false, fontSizePt: 13, color: .white, scale: 2)?.image === raster.image)
+    }
+
+    @Test
+    func repeatedPageFailuresEnterACooldownThatExpires() async throws {
+        rasterizer.clearCache()
+        defer { rasterizer.debugResetFailureTracking() }
+        _ = try #require(await rasterizer.raster(
+            source: "$c_0$", isDisplay: false, fontSizePt: 13, color: .white, scale: 2))
+        #expect(!rasterizer.isInCooldown)
+        rasterizer.debugSimulatePageFailure()
+        rasterizer.debugSimulatePageFailure()
+        #expect(!rasterizer.isInCooldown)
+        rasterizer.debugSimulatePageFailure()
+        #expect(rasterizer.isInCooldown)
+        #expect(!rasterizer.debugHasWebView)
+        let before = rasterizer.renderCount
+        let during = await rasterizer.raster(
+            source: "$c_1$", isDisplay: false, fontSizePt: 13, color: .white, scale: 2)
+        #expect(during == nil)
+        #expect(rasterizer.renderCount == before)
+        #expect(!rasterizer.debugHasWebView)
+        #expect(rasterizer.lastRejectionReason?.contains("cooling down") == true)
+        // Cache hits keep working during the cooldown.
+        #expect(rasterizer.cachedRaster(source: "$c_0$", isDisplay: false, fontSizePt: 13, color: .white, scale: 2) != nil)
+        #expect(await rasterizer.raster(source: "$c_0$", isDisplay: false, fontSizePt: 13, color: .white, scale: 2) != nil)
+        rasterizer.clockOffset = TerminalMathRasterizer.cooldownDuration + 1
+        #expect(!rasterizer.isInCooldown)
+        let after = try #require(await rasterizer.raster(
+            source: "$c_1$", isDisplay: false, fontSizePt: 13, color: .white, scale: 2))
+        #expect(after.widthPt > 0)
+        #expect(rasterizer.renderCount == before + 1)
+        #expect(rasterizer.debugHasWebView)
+    }
+
+    // MARK: - Page lifecycle (G1, G4)
+
+    @Test
+    func pageFailureWhileLoadingFailsTheRequestAndTheRebuiltPageLoadsCleanly() async throws {
+        rasterizer.clearCache()
+        defer { rasterizer.debugResetFailureTracking() }
+        rasterizer.debugTeardownWebView()
+        #expect(!rasterizer.debugHasWebView)
+        async let pending = rasterizer.raster(
+            source: "$p$", isDisplay: false, fontSizePt: 13, color: .white, scale: 2)
+        // Let the request reach ensureWebView, then kill the page before
+        // it finishes loading.
+        for _ in 0..<100 where !rasterizer.debugHasWebView { await Task.yield() }
+        #expect(rasterizer.debugHasWebView)
+        #expect(!rasterizer.debugIsPageReady)
+        rasterizer.debugSimulatePageFailure()
+        #expect(await pending == nil)
+        #expect(rasterizer.lastRejectionReason == "no web view")
+        #expect(!rasterizer.debugIsPageReady)
+        // The failed request is negative-cached; a fresh request rebuilds
+        // the page, which must be marked ready by its own load, not by the
+        // stale one.
+        let before = rasterizer.renderCount
+        #expect(await rasterizer.raster(source: "$p$", isDisplay: false, fontSizePt: 13, color: .white, scale: 2) == nil)
+        #expect(rasterizer.renderCount == before)
+        let other = try #require(await rasterizer.raster(
+            source: "$q$", isDisplay: false, fontSizePt: 13, color: .white, scale: 2))
+        #expect(other.widthPt > 0)
+        #expect(rasterizer.debugIsPageReady)
+        rasterizer.clockOffset = 3
+        let retried = try #require(await rasterizer.raster(
+            source: "$p$", isDisplay: false, fontSizePt: 13, color: .white, scale: 2))
+        #expect(retried.widthPt > 0)
+        #expect(rasterizer.renderCount == before + 2)
+    }
+
+    @Test
+    func idleTeardownReleasesTheWebViewAndRebuildsLazily() async throws {
+        rasterizer.clearCache()
+        let savedInterval = rasterizer.idleTeardownInterval
+        defer { rasterizer.idleTeardownInterval = savedInterval }
+        rasterizer.idleTeardownInterval = 0.05
+        let first = try #require(await rasterizer.raster(
+            source: "$i$", isDisplay: false, fontSizePt: 13, color: .white, scale: 2))
+        #expect(rasterizer.debugHasWebView)
+        for _ in 0..<100 where rasterizer.debugHasWebView {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(!rasterizer.debugHasWebView)
+        // The cache survives the teardown; a miss rebuilds the page.
+        #expect(rasterizer.cachedRaster(source: "$i$", isDisplay: false, fontSizePt: 13, color: .white, scale: 2)?.image === first.image)
+        let before = rasterizer.renderCount
+        let second = try #require(await rasterizer.raster(
+            source: "$j$", isDisplay: false, fontSizePt: 13, color: .white, scale: 2))
+        #expect(second.widthPt > 0)
+        #expect(rasterizer.renderCount == before + 1)
+        #expect(rasterizer.debugHasWebView)
+        rasterizer.idleTeardownInterval = savedInterval
+        // Re-arm the timer with the restored interval so the teardown
+        // scheduled at 0.05 s does not fire under a later test.
+        _ = await rasterizer.raster(source: "$j$", isDisplay: false, fontSizePt: 13, color: .white, scale: 2)
+    }
+
+    @Test
+    func formulaWiderThanTheCanvasIsRejectedAndCached() async {
+        rasterizer.clearCache()
+        let source = "$" + String(repeating: "x+", count: 300) + "x$"
+        let raster = await rasterizer.raster(source: source, isDisplay: false, fontSizePt: 13, color: .white, scale: 2)
+        #expect(raster == nil)
+        #expect(rasterizer.lastRejectionReason == "formula exceeds the raster canvas")
+        #expect(rasterizer.isCachedRejection(source: source, isDisplay: false, fontSizePt: 13, color: .white, scale: 2))
+    }
+
     @Test
     func bodyStripsDelimitersAndTrims() {
         #expect(TerminalMathRasterizer.body(of: "$ x $") == "x")

@@ -30,8 +30,23 @@ import WebKit
 ///      point.
 ///
 /// Parse errors, trust refusals, and the other guard rejections resolve to
-/// `nil` and are cached as rejections; transient failures (snapshot errors,
-/// a terminated web content process) are not cached.
+/// `nil` and are cached as rejections (`isCachedRejection` is true). Transient
+/// failures (snapshot errors, a JavaScript failure, a terminated web content
+/// process) resolve to `nil` and are cached as a short negative entry: while
+/// it is fresh (2 s, doubling per repeat up to 30 s) `raster(...)` returns
+/// `nil` at once without touching WebKit, `cachedRaster` returns `nil`, and
+/// `isCachedRejection` returns `false`; once it expires the next request
+/// renders again. Callers may add their own backoff on top of this.
+///
+/// Page failures (a load failure or a WebContent termination) each cost a
+/// `WKWebView` recreation. After `pageFailureLimit` of them inside
+/// `pageFailureWindow` the rasterizer enters a cooldown of `cooldownDuration`
+/// during which `raster(...)` returns `nil` without touching WebKit
+/// (`isInCooldown`); the cache keeps serving hits meanwhile.
+///
+/// The hidden web view is torn down after `idleTeardownInterval` without a
+/// `raster(...)` call (the cache survives) and rebuilt lazily by the next
+/// request.
 ///
 /// The KaTeX assets are read through `MarkdownViewerAssets.shared.lazyAsset`
 /// on the first render, never at app start, because touching
@@ -73,13 +88,23 @@ final class TerminalMathRasterizer {
     private enum CacheEntry {
         case rendered(Raster, bytes: Int)
         case rejected(String)
+        /// A transient failure: `raster(...)` returns `nil` until `until`
+        /// (uptime seconds); `backoff` is the delay this entry was stored
+        /// with, doubled by the next failure of the same key.
+        case failed(String, until: TimeInterval, backoff: TimeInterval)
 
         var bytes: Int {
             switch self {
             case .rendered(_, let bytes): return bytes
-            case .rejected: return 0
+            case .rejected, .failed: return 0
             }
         }
+    }
+
+    private struct CacheSlot {
+        var entry: CacheEntry
+        /// Generation stamp from `useCounter`; larger is more recently used.
+        var lastUsed: UInt64
     }
 
     private struct StageMetrics: Decodable {
@@ -99,14 +124,35 @@ final class TerminalMathRasterizer {
     /// `cmux-math.js`) KaTeX is asked to typeset.
     static let maxRenderBodyLength = 4096
 
-    /// Cap on the summed bitmap bytes held by the cache.
-    static let cacheByteLimit = 64 * 1024 * 1024
+    /// Cap on the summed bitmap bytes held by the cache. Instance `var` so a
+    /// test can lower it on `.shared` (and restore it in a `defer`).
+    var cacheByteLimit = 64 * 1024 * 1024
 
     /// Cap on cache entries, so cheap rejections cannot grow without bound.
-    static let cacheEntryLimit = 4096
+    var cacheEntryLimit = 4096
 
-    /// Size of the hidden page; formulas larger than this are clipped.
-    private static let canvasSize = CGSize(width: 2048, height: 1024)
+    /// Size of the hidden page. A terminal row is at most a few hundred
+    /// cells (~2000 pt at 7 pt per cell), but the controller's fit rule
+    /// rejects anything wider than the row and the harness measured
+    /// `\int_0^\infty e^{-x^2}\,dx = \frac{\sqrt{\pi}}{2}` at 40 pt at
+    /// under 300 x 100 CSS px, so 1024 x 512 leaves ample headroom. A
+    /// formula whose measured box does not fit is rejected (cached).
+    private static let canvasSize = CGSize(width: 1024, height: 512)
+
+    /// Backoff of the first negative entry for a transient failure.
+    static let initialFailureBackoff: TimeInterval = 2
+    /// Upper bound on the doubled negative-entry backoff.
+    static let maxFailureBackoff: TimeInterval = 30
+
+    /// Page failures (load failure or WebContent termination) inside
+    /// `pageFailureWindow` that trigger the cooldown.
+    static let pageFailureLimit = 3
+    static let pageFailureWindow: TimeInterval = 60
+    static let cooldownDuration: TimeInterval = 60
+
+    /// Seconds without a `raster(...)` call after which the hidden web view
+    /// is released. Instance `var` so a test can shorten it.
+    var idleTeardownInterval: TimeInterval = 5 * 60
 
     /// Padding, in CSS px, added around the measured box so glyph overshoot
     /// (italic overhang, radicals, big delimiters) is never clipped.
@@ -123,16 +169,38 @@ final class TerminalMathRasterizer {
 
     // MARK: - State
 
-    private var cache: [CacheKey: CacheEntry] = [:]
-    /// Least recently used first.
-    private var cacheOrder: [CacheKey] = []
+    private var cache: [CacheKey: CacheSlot] = [:]
     private var cacheBytes = 0
+    /// Monotonic use stamp handed to the slot of every lookup and store.
+    private var useCounter: UInt64 = 0
 
     private var webView: WKWebView?
     private var navigationWatcher: NavigationWatcher?
     private var pageReady = false
+    /// Bumped by every `ensureWebView`; a page-load task whose generation
+    /// is stale must not mark the (newer) page ready.
+    private var pageGeneration: UInt64 = 0
+    private var preloadTask: Task<Void, Never>?
     private var readyWaiters: [CheckedContinuation<Void, Never>] = []
     private var queueTail: Task<Void, Never>?
+    /// Renders currently inside `renderUncontended` (0 or 1); idle teardown
+    /// waits for it to drain.
+    private var activeRenders = 0
+    private var idleTeardownTask: Task<Void, Never>?
+
+    /// Uptime stamps of recent page failures, oldest first.
+    private var pageFailureTimes: [TimeInterval] = []
+    private var cooldownUntil: TimeInterval = 0
+
+    /// Seconds added to the uptime clock. Test hook for the time-based
+    /// entries (negative cache, cooldown) so tests need not sleep.
+    var clockOffset: TimeInterval = 0
+
+    #if DEBUG
+    /// Test hook: the next `renderUncontended` fails transiently before
+    /// touching the page.
+    var debugFailNextRender = false
+    #endif
 
     /// Why the most recent request returned `nil`, for the debug dump.
     private(set) var lastRejectionReason: String?
@@ -143,6 +211,13 @@ final class TerminalMathRasterizer {
 
     private init() {}
 
+    /// Uptime seconds (plus `clockOffset`); never goes backwards.
+    private var now: TimeInterval { ProcessInfo.processInfo.systemUptime + clockOffset }
+
+    /// Whether page failures have suspended rendering; `raster(...)` returns
+    /// `nil` without touching WebKit until the cooldown ends.
+    var isInCooldown: Bool { now < cooldownUntil }
+
     // MARK: - Public API
 
     /// Renders `source` (with or without its `$`, `$$`, `\(`, `\[`
@@ -151,13 +226,30 @@ final class TerminalMathRasterizer {
     /// trust-gated command, a body over `maxRenderBodyLength`, or a macro
     /// definition. `lastRejectionReason` says why.
     func raster(source: String, isDisplay: Bool, fontSizePt: CGFloat, color: NSColor, scale: CGFloat) async -> Raster? {
+        scheduleIdleTeardown()
         let key = Self.cacheKey(source: source, isDisplay: isDisplay, fontSizePt: fontSizePt, color: color, scale: scale)
         if let entry = lookup(key) {
-            return raster(from: entry)
+            switch entry {
+            case .rendered(let raster, _):
+                return raster
+            case .rejected(let reason):
+                lastRejectionReason = reason
+                return nil
+            case .failed(let reason, let until, _):
+                if now < until {
+                    lastRejectionReason = reason
+                    return nil
+                }
+                // Expired: fall through and render again.
+            }
         }
         if let reason = Self.precheckRejection(body: key.body) {
             lastRejectionReason = reason
             store(key: key, entry: .rejected(reason))
+            return nil
+        }
+        if isInCooldown {
+            lastRejectionReason = "rasterizer cooling down after page failures"
             return nil
         }
         // Serialize: the page has one stage. Later callers wait for earlier
@@ -166,13 +258,23 @@ final class TerminalMathRasterizer {
         let job = Task { [weak self] in
             await previous?.value
             guard let self else { return }
-            if self.cache[key] == nil {
+            if self.needsRender(key) {
                 await self.renderUncontended(key: key)
             }
         }
         queueTail = job
         await job.value
         return lookup(key).flatMap { raster(from: $0) }
+    }
+
+    /// Whether a queued request still has to render once its turn comes: a
+    /// duplicate in flight may have filled the cache meanwhile.
+    private func needsRender(_ key: CacheKey) -> Bool {
+        switch cache[key]?.entry {
+        case nil: return true
+        case .failed(_, let until, _): return now >= until
+        case .rendered, .rejected: return false
+        }
     }
 
     /// Synchronous cache probe for the draw path. Returns `nil` for both a
@@ -186,15 +288,34 @@ final class TerminalMathRasterizer {
     /// stop asking without waiting on `raster(...)`.
     func isCachedRejection(source: String, isDisplay: Bool, fontSizePt: CGFloat, color: NSColor, scale: CGFloat) -> Bool {
         let key = Self.cacheKey(source: source, isDisplay: isDisplay, fontSizePt: fontSizePt, color: color, scale: scale)
-        if case .rejected = cache[key] { return true }
+        if case .rejected = cache[key]?.entry { return true }
         return false
     }
 
     func clearCache() {
         cache.removeAll()
-        cacheOrder.removeAll()
         cacheBytes = 0
     }
+
+    #if DEBUG
+    /// Test hooks.
+    var debugHasWebView: Bool { webView != nil }
+    var debugIsPageReady: Bool { pageReady }
+
+    /// Simulates a WebContent process termination (or a page-load failure).
+    func debugSimulatePageFailure() { pageDidTerminate() }
+
+    /// Releases the hidden web view as the idle timer would.
+    func debugTeardownWebView() { teardownIdleWebView() }
+
+    /// Forgets page failures, the cooldown, and the clock offset.
+    func debugResetFailureTracking() {
+        pageFailureTimes.removeAll()
+        cooldownUntil = 0
+        clockOffset = 0
+        debugFailNextRender = false
+    }
+    #endif
 
     /// Strip math delimiters the way `CmuxMath.bodyOf` does, then trim.
     static func body(of source: String) -> String {
@@ -239,31 +360,51 @@ final class TerminalMathRasterizer {
         )
     }
 
+    /// O(1): a hit only refreshes the slot's use stamp.
     private func lookup(_ key: CacheKey) -> CacheEntry? {
-        guard let entry = cache[key] else { return nil }
-        if let index = cacheOrder.lastIndex(of: key), index != cacheOrder.count - 1 {
-            cacheOrder.remove(at: index)
-            cacheOrder.append(key)
-        }
-        return entry
+        guard let slot = cache[key] else { return nil }
+        useCounter += 1
+        cache[key]?.lastUsed = useCounter
+        return slot.entry
     }
 
     private func store(key: CacheKey, entry: CacheEntry) {
-        if let existing = cache.updateValue(entry, forKey: key) {
-            cacheBytes -= existing.bytes
-            if let index = cacheOrder.lastIndex(of: key) {
-                cacheOrder.remove(at: index)
-            }
+        useCounter += 1
+        if let existing = cache.updateValue(CacheSlot(entry: entry, lastUsed: useCounter), forKey: key) {
+            cacheBytes -= existing.entry.bytes
         }
-        cacheOrder.append(key)
         cacheBytes += entry.bytes
-        while cacheOrder.count > 1,
-              cacheBytes > Self.cacheByteLimit || cacheOrder.count > Self.cacheEntryLimit {
-            let evicted = cacheOrder.removeFirst()
-            if let removed = cache.removeValue(forKey: evicted) {
-                cacheBytes -= removed.bytes
-            }
+        evictIfOverBudget(keeping: key)
+    }
+
+    private var isOverBudget: Bool {
+        cacheBytes > cacheByteLimit || cache.count > cacheEntryLimit
+    }
+
+    /// Only the store path pays for ordering: when over budget, sort the
+    /// slots by use stamp once and drop the least recently used until the
+    /// cache fits. The entry just stored is never evicted.
+    private func evictIfOverBudget(keeping kept: CacheKey) {
+        guard isOverBudget else { return }
+        let victims = cache
+            .filter { $0.key != kept }
+            .sorted { $0.value.lastUsed < $1.value.lastUsed }
+        for (key, slot) in victims {
+            guard isOverBudget else { break }
+            cache.removeValue(forKey: key)
+            cacheBytes -= slot.entry.bytes
         }
+    }
+
+    /// Records a transient failure: a fresh negative entry, with the backoff
+    /// doubled when the key's previous entry was also a failure.
+    private func storeTransientFailure(key: CacheKey, reason: String) {
+        lastRejectionReason = reason
+        var backoff = Self.initialFailureBackoff
+        if case .failed(_, _, let previous) = cache[key]?.entry {
+            backoff = min(previous * 2, Self.maxFailureBackoff)
+        }
+        store(key: key, entry: .failed(reason, until: now + backoff, backoff: backoff))
     }
 
     private func raster(from entry: CacheEntry) -> Raster? {
@@ -274,9 +415,18 @@ final class TerminalMathRasterizer {
     // MARK: - Rendering
 
     private func renderUncontended(key: CacheKey) async {
+        activeRenders += 1
+        defer { activeRenders -= 1 }
+        #if DEBUG
+        if debugFailNextRender {
+            debugFailNextRender = false
+            storeTransientFailure(key: key, reason: "simulated transient failure")
+            return
+        }
+        #endif
         await waitForPage()
-        guard let webView else {
-            lastRejectionReason = "no web view"
+        guard let webView, pageReady else {
+            storeTransientFailure(key: key, reason: "no web view")
             return
         }
         renderCount += 1
@@ -294,12 +444,12 @@ final class TerminalMathRasterizer {
         do {
             let result = try await webView.callAsyncJavaScript(js, arguments: arguments, in: nil, contentWorld: .page)
             guard let json = result as? String, let data = json.data(using: .utf8) else {
-                lastRejectionReason = "unexpected JS result"
+                storeTransientFailure(key: key, reason: "unexpected JS result")
                 return
             }
             stage = try JSONDecoder().decode(StageMetrics.self, from: data)
         } catch {
-            lastRejectionReason = "JS failure: \(error)"
+            storeTransientFailure(key: key, reason: "JS failure: \(error)")
             return
         }
         guard stage.ok,
@@ -313,6 +463,13 @@ final class TerminalMathRasterizer {
             return
         }
         let rect = CGRect(x: x, y: y, width: width, height: height)
+        guard rect.maxX <= Self.canvasSize.width, rect.maxY <= Self.canvasSize.height else {
+            // Deterministic for this input: cache it like a parse error.
+            let reason = "formula exceeds the raster canvas"
+            lastRejectionReason = reason
+            store(key: key, entry: .rejected(reason))
+            return
+        }
         let devicePixelRatio = CGFloat(stage.dpr ?? 1)
         let snapshotConfiguration = WKSnapshotConfiguration()
         snapshotConfiguration.rect = rect
@@ -321,7 +478,7 @@ final class TerminalMathRasterizer {
         do {
             snapshot = try await webView.takeSnapshot(configuration: snapshotConfiguration)
         } catch {
-            lastRejectionReason = "snapshot failure: \(error)"
+            storeTransientFailure(key: key, reason: "snapshot failure: \(error)")
             return
         }
         // The snapshot comes back as an NSImage of `snapshotWidth` points
@@ -329,7 +486,7 @@ final class TerminalMathRasterizer {
         // after the division above); rewrap that bitmap as a `scale`x image
         // whose point size is the measured box.
         guard let cgImage = snapshot.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-            lastRejectionReason = "snapshot has no bitmap"
+            storeTransientFailure(key: key, reason: "snapshot has no bitmap")
             return
         }
         let pointSize = NSSize(width: width, height: height)
@@ -374,31 +531,76 @@ final class TerminalMathRasterizer {
         self.webView = webView
         self.navigationWatcher = watcher
         pageReady = false
+        pageGeneration += 1
         webView.loadHTMLString(Self.pageHTML(katexJS: katexJS, katexCSS: katexCSS, padding: Self.padding), baseURL: nil)
     }
 
     private func pageDidLoad() {
-        Task { [weak self] in
+        preloadTask?.cancel()
+        let generation = pageGeneration
+        preloadTask = Task { [weak self] in
             guard let self, let webView = self.webView else { return }
             // Load every KaTeX face once so later renders never wait on
             // fonts. Failures here are not fatal: render() awaits
             // document.fonts.ready anyway.
             _ = try? await webView.callAsyncJavaScript(
                 "return await window.__cmuxMathRaster.preloadFonts();", arguments: [:], in: nil, contentWorld: .page)
+            // The page may have died and been rebuilt while preloading; the
+            // new page announces its own readiness.
+            guard !Task.isCancelled, self.webView === webView, self.pageGeneration == generation else { return }
             self.pageReady = true
             self.resumeReadyWaiters()
         }
     }
 
-    /// The web content process died: drop the page so the next request
-    /// rebuilds it. Waiters resume and their render fails transiently
-    /// (not cached), so a later request retries.
+    /// The web content process died (or the page failed to load): drop the
+    /// page so the next request rebuilds it. Waiters resume and their render
+    /// fails transiently (negative-cached), so a later request retries.
+    /// Repeated failures trip the cooldown.
     private func pageDidTerminate() {
+        dropWebView()
+        let current = now
+        pageFailureTimes.append(current)
+        pageFailureTimes.removeAll { current - $0 > Self.pageFailureWindow }
+        if pageFailureTimes.count >= Self.pageFailureLimit {
+            cooldownUntil = current + Self.cooldownDuration
+            pageFailureTimes.removeAll()
+        }
+        resumeReadyWaiters()
+    }
+
+    private func dropWebView() {
+        preloadTask?.cancel()
+        preloadTask = nil
         webView?.navigationDelegate = nil
+        webView?.stopLoading()
         webView = nil
         navigationWatcher = nil
         pageReady = false
-        resumeReadyWaiters()
+    }
+
+    // MARK: - Idle teardown
+
+    /// Restarts the idle timer; called by every `raster(...)`.
+    private func scheduleIdleTeardown() {
+        idleTeardownTask?.cancel()
+        let interval = idleTeardownInterval
+        idleTeardownTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(interval))
+            guard !Task.isCancelled, let self else { return }
+            self.teardownIdleWebView()
+        }
+    }
+
+    /// Releases the web view when nothing is rendering; a render in flight
+    /// restarts the timer for another interval.
+    private func teardownIdleWebView() {
+        guard webView != nil else { return }
+        guard activeRenders == 0, readyWaiters.isEmpty else {
+            scheduleIdleTeardown()
+            return
+        }
+        dropWebView()
     }
 
     private func resumeReadyWaiters() {

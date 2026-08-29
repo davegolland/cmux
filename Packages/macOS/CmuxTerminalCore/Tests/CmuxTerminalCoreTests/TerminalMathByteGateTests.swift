@@ -50,6 +50,38 @@ struct TerminalMathByteGateTests {
         #expect(gate.candidateRevision == 0)
     }
 
+    @Test("An OSC opened in one chunk swallows a dollar in the next")
+    func oscStatePersistsAcrossChunks() {
+        var gate = TerminalMathByteGate()
+        consume("\u{1B}]0;cost ", into: &gate)
+        #expect(gate.candidateRevision == 0)
+        consume("$100\u{07}", into: &gate)
+        #expect(gate.candidateRevision == 0)
+        consume("$x$", into: &gate)
+        #expect(gate.candidateRevision == 1)
+    }
+
+    @Test("A dollar as a CSI intermediate byte does not fire")
+    func csiIntermediateDollarDoesNotFire() {
+        // DECRQM: `ESC [ ? 2026 $ p`, emitted by tmux and neovim on startup.
+        var gate = TerminalMathByteGate()
+        consume("\u{1B}[?2026$p", into: &gate)
+        #expect(gate.candidateRevision == 0)
+        consume("after", into: &gate)
+        #expect(gate.candidateRevision == 0)
+    }
+
+    @Test("A CSI split across chunks mid-parameters keeps swallowing a dollar")
+    func csiStatePersistsAcrossChunks() {
+        var gate = TerminalMathByteGate()
+        consume("\u{1B}[?20", into: &gate)
+        #expect(gate.candidateRevision == 0)
+        consume("26$p", into: &gate)
+        #expect(gate.candidateRevision == 0)
+        consume("$y$", into: &gate)
+        #expect(gate.candidateRevision == 1)
+    }
+
     @Test("Bytes inside a CSI sequence do not fire")
     func csiParametersDoNotFire() {
         var gate = TerminalMathByteGate()

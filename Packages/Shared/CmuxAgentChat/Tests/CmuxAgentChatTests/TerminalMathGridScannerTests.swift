@@ -59,6 +59,99 @@ struct TerminalMathGridScannerTests {
         #expect(placement.segments.count == 2)
     }
 
+    @Test("stitches a display span across three wrapped rows")
+    func threeSegmentDisplaySpan() throws {
+        let columns = 10
+        let rows = [
+            "ab $$x+y+z",  // opener on row 0
+            "+a+b+c+d+e",  // full middle row
+            "+f$$ tail",   // closer on row 2
+        ]
+        #expect(rows[0].count == columns)
+        #expect(rows[1].count == columns)
+
+        let found = placements(rows, columns: columns)
+        let placement = try #require(found.first)
+        #expect(found.count == 1)
+        #expect(placement.isDisplay)
+        #expect(placement.source == "$$x+y+z+a+b+c+d+e+f$$")
+        #expect(placement.body == "x+y+z+a+b+c+d+e+f")
+        #expect(placement.segments == [
+            .init(row: 0, startColumn: 3, endColumn: 10),
+            .init(row: 1, startColumn: 0, endColumn: 10),
+            .init(row: 2, startColumn: 0, endColumn: 4),
+        ])
+    }
+
+    @Test("stitches a closing $$ that wraps between its two characters")
+    func closingDelimiterSplitAtWrapPoint() throws {
+        let columns = 10
+        let rows = [
+            "abcde $$x$",  // first `$` of the closer ends row 0
+            "$ trailing",  // second `$` starts row 1
+        ]
+        #expect(rows[0].count == columns)
+
+        let found = placements(rows, columns: columns)
+        let placement = try #require(found.first)
+        #expect(found.count == 1)
+        #expect(placement.isDisplay)
+        #expect(placement.source == "$$x$$")
+        #expect(placement.body == "x")
+        #expect(placement.segments == [
+            .init(row: 0, startColumn: 6, endColumn: 10),
+            .init(row: 1, startColumn: 0, endColumn: 1),
+        ])
+    }
+
+    @Test("stitches an opening \\( that wraps between its two characters")
+    func openingDelimiterSplitAtWrapPoint() throws {
+        // The opener pre-pass carries the backslash across the row boundary;
+        // without the carry neither row would look like it opens a span.
+        let columns = 10
+        let rows = [
+            #"see this \"#,  // 10 characters, ends in a backslash
+            #"(a+b\) ok"#,
+        ]
+        #expect(rows[0].count == columns)
+
+        let found = placements(rows, columns: columns)
+        let placement = try #require(found.first)
+        #expect(found.count == 1)
+        #expect(!placement.isDisplay)
+        #expect(placement.source == #"\(a+b\)"#)
+        #expect(placement.segments == [
+            .init(row: 0, startColumn: 9, endColumn: 10),
+            .init(row: 1, startColumn: 0, endColumn: 6),
+        ])
+    }
+
+    @Test("rejects a full box-drawing grid without walking it")
+    func fullBoxGridWithoutOpenersYieldsNothing() {
+        // Every row fills the width with a multi-byte character and the next
+        // row starts with a non-space, so all rows would stitch; the opener
+        // pre-pass must reject the grid before any of that happens.
+        let columns = 40
+        let rows = Array(repeating: String(repeating: "\u{2502}", count: columns), count: 30)
+
+        #expect(placements(rows, columns: columns).isEmpty)
+    }
+
+    @Test("still finds math on a stitched line whose opener row is not the first row")
+    func openerOnLaterRowOfStitchedLine() throws {
+        let columns = 10
+        let rows = [
+            "abcdefghij",  // full, no opener
+            "kl $x+1$ m",
+        ]
+
+        let placement = try #require(placements(rows, columns: columns).first)
+        #expect(placement.row == 1)
+        #expect(placement.startColumn == 3)
+        #expect(placement.endColumn == 8)
+        #expect(placement.source == "$x+1$")
+    }
+
     @Test("does not stitch when the next row starts with a space")
     func fullRowFollowedBySpaceDoesNotStitch() {
         let columns = 12
@@ -114,14 +207,14 @@ struct TerminalMathGridScannerTests {
         #expect(placements(rows, columns: 0).isEmpty)
     }
 
-    @Test("drops a source longer than 2048 characters")
+    @Test("drops a source longer than 1024 characters")
     func overlongSourceIsDropped() {
         let columns = 100
-        // Build a $$ ... $$ display span whose source is 2049 characters and
+        // Build a $$ ... $$ display span whose source is 1025 characters and
         // spread it across full-width rows so it stitches into one line.
-        let body = String(repeating: "a", count: 2049 - 4)
+        let body = String(repeating: "a", count: 1025 - 4)
         let source = "$$" + body + "$$"
-        #expect(source.count == 2049)
+        #expect(source.count == 1025)
         var rows: [String] = []
         var remaining = Substring(source)
         while !remaining.isEmpty {
@@ -132,7 +225,7 @@ struct TerminalMathGridScannerTests {
         #expect(placements(rows, columns: columns).isEmpty)
 
         // The same construction one character shorter is kept.
-        let shorter = "$$" + String(repeating: "a", count: 2048 - 4) + "$$"
+        let shorter = "$$" + String(repeating: "a", count: 1024 - 4) + "$$"
         var shorterRows: [String] = []
         var rest = Substring(shorter)
         while !rest.isEmpty {
@@ -166,5 +259,22 @@ struct TerminalMathGridScannerTests {
         #expect(placement.startColumn == 2)
         #expect(placement.endColumn == 13)
         #expect(placement.source == "\\[ a = b \\]")
+    }
+
+    @Test("stitching stops after maxStitchedRows so a full-width grid stays bounded")
+    func stitchingIsBounded() {
+        let columns = 10
+        let filler = String(repeating: "x", count: columns)
+        var rows = Array(repeating: filler, count: 40)
+        // The formula sits on rows 16 and 17, right after the first cut, and
+        // row 17 ends the wrapped source.
+        rows[16] = "ab $x^2 + "
+        rows[17] = "y^2$ done"
+        let placements = TerminalMathGridScanner().placements(rows: rows, columns: columns, cursor: nil)
+        #expect(placements.count == 1)
+        #expect(placements.first?.source == "$x^2 + y^2$")
+        #expect(placements.first?.row == 16)
+        #expect(placements.first?.continuationRows.count == 1)
+        #expect(TerminalMathGridScanner.maxStitchedRows == 16)
     }
 }

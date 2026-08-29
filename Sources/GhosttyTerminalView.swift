@@ -5180,6 +5180,16 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         return performed
     }
 
+    /// Whether Ghostty currently has a mouse or keyboard selection on this
+    /// surface; the math overlay hides while one is active so the selection
+    /// highlight stays visible over formula cells.
+    func terminalMathSurfaceHasSelection() -> Bool {
+        guard let surface = terminalSurface?.liveSurfaceForGhosttyAccess(reason: "terminalMathSelection") else {
+            return false
+        }
+        return ghostty_surface_has_selection(surface)
+    }
+
     /// Cell geometry for the math overlay, read through the validated surface
     /// accessor; nil when the surface is not live or reports no grid.
     func terminalMathGridMetrics() -> TerminalMathGridMetrics? {
@@ -8329,7 +8339,10 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         discardPendingExplicitKeyDownEvents()
         discardPendingPasteAfterSurfaceReady()
         keyboardCopyModeRenderedFrameDemandRelease?()
-        terminalMathControllerStorage?.invalidate()
+        // NSView deinit runs on the main thread; the controller is @MainActor.
+        MainActor.assumeIsolated {
+            terminalMathControllerStorage?.invalidate()
+        }
         selectionAccessibilitySignal.finish()
         if titleUpdateSurfaceKey != nil {
             titleUpdateIngress.retireCurrentAttachment()

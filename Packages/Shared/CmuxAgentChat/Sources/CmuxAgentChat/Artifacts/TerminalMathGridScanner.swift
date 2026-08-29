@@ -13,12 +13,21 @@
 /// separator, and a span that crosses a row boundary yields a placement with
 /// ``TerminalMathPlacement/continuationRows``.
 ///
-/// The scanner is pure and allocation-free for rows that contain none of
-/// `$`, `\(`, or `\[`.
+/// The scanner is pure. A grid that contains none of `$`, `\(`, or `\[`
+/// costs one scalar pass over the rows and no stitching, allocation, or
+/// grapheme counting.
 public struct TerminalMathGridScanner: Sendable {
     /// Sources longer than this many characters are dropped: they cannot fit
     /// a sensible overlay and are almost certainly not one formula.
-    public static let maxSourceLength = 2048
+    public static let maxSourceLength = 1024
+
+    /// Upper bound on the rows stitched into one logical line.
+    ///
+    /// Bounds the detector's work on grids whose every row fills the width
+    /// (a TUI drawing box borders stitches its whole viewport otherwise). A
+    /// formula that straddles the cut is missed; formulas longer than this
+    /// many rows are not expected on a terminal.
+    public static let maxStitchedRows = 16
 
     private let detector: TerminalMathSpanDetector
 
@@ -46,22 +55,28 @@ public struct TerminalMathGridScanner: Sendable {
     ) -> [TerminalMathPlacement] {
         guard !rows.isEmpty, columns > 0 else { return [] }
 
+        // Cheap reject before any stitching or allocation: no row can open a
+        // span. On a math-free grid this pass is the entire cost of a scan.
+        let openerRows = Self.rowsWithCandidateOpener(rows)
+        guard openerRows.contains(true) else { return [] }
+
         var result: [TerminalMathPlacement] = []
         var lineStart = 0
         while lineStart < rows.count {
             let lineEnd = Self.logicalLineEnd(startingAt: lineStart, rows: rows, columns: columns)
             defer { lineStart = lineEnd }
 
-            // Cheap reject before any allocation: none of the rows in this
-            // logical line can open a span.
-            guard Self.anyRowHasCandidateOpener(rows[lineStart..<lineEnd]) else { continue }
+            guard openerRows[lineStart..<lineEnd].contains(true) else { continue }
 
+            // Grid rows carry no escape sequences, so the detector's stripped
+            // text equals its input and the span ranges index the line
+            // directly. `spans(in:)` is called without a `hasMath` probe,
+            // which would strip and scan the same line a second time.
             if lineEnd - lineStart == 1 {
                 let row = rows[lineStart]
-                guard detector.hasMath(in: row) else { continue }
                 Self.appendPlacements(
                     from: detector.spans(in: row),
-                    in: detector.strippedText(row),
+                    in: row,
                     rowStarts: [0],
                     firstRow: lineStart,
                     cursor: cursor,
@@ -77,10 +92,9 @@ public struct TerminalMathGridScanner: Sendable {
                     joined += rows[index]
                     offset += rows[index].count
                 }
-                guard detector.hasMath(in: joined) else { continue }
                 Self.appendPlacements(
                     from: detector.spans(in: joined),
-                    in: detector.strippedText(joined),
+                    in: joined,
                     rowStarts: rowStarts,
                     firstRow: lineStart,
                     cursor: cursor,
@@ -101,7 +115,9 @@ public struct TerminalMathGridScanner: Sendable {
     /// Returns the exclusive end row of the logical line starting at `start`.
     private static func logicalLineEnd(startingAt start: Int, rows: [String], columns: Int) -> Int {
         var end = start + 1
-        while end < rows.count, continues(row: rows[end - 1], onto: rows[end], columns: columns) {
+        while end < rows.count,
+              end - start < maxStitchedRows,
+              continues(row: rows[end - 1], onto: rows[end], columns: columns) {
             end += 1
         }
         return end
@@ -116,7 +132,12 @@ public struct TerminalMathGridScanner: Sendable {
 
     /// `true` when `row` holds at least `columns` characters, without
     /// counting past that many.
+    ///
+    /// A character is at least one UTF-8 byte, so a row shorter than
+    /// `columns` bytes cannot fill the width; that O(1) check rejects every
+    /// partial row before any grapheme counting.
     private static func fills(_ row: String, columns: Int) -> Bool {
+        guard row.utf8.count >= columns else { return false }
         var seen = 0
         var index = row.startIndex
         while index < row.endIndex {
@@ -127,20 +148,28 @@ public struct TerminalMathGridScanner: Sendable {
         return false
     }
 
-    /// `true` when any row contains a `$`, `\(`, or `\[`. Backslash state
-    /// does not carry across rows, so a `\` that ends one row and a `(` that
-    /// starts the next is also accepted: false positives here only cost a
-    /// detector pass.
-    private static func anyRowHasCandidateOpener(_ rows: ArraySlice<String>) -> Bool {
+    /// One flag per row: `true` when the row contains a `$`, `\(`, or `\[`.
+    ///
+    /// Backslash state carries across rows, so a `\` that ends one row and
+    /// a `(` that starts the next flags the second row; the rows join with
+    /// no separator when they stitch, so that is a real opener there, and
+    /// elsewhere the false positive only costs a detector pass.
+    private static func rowsWithCandidateOpener(_ rows: [String]) -> [Bool] {
+        var flags = [Bool](repeating: false, count: rows.count)
         var previousWasBackslash = false
-        for row in rows {
+        for (index, row) in rows.enumerated() {
             for scalar in row.unicodeScalars {
-                if scalar == "$" { return true }
-                if previousWasBackslash, scalar == "(" || scalar == "[" { return true }
+                if scalar == "$" || (previousWasBackslash && (scalar == "(" || scalar == "[")) {
+                    flags[index] = true
+                    // The rest of the row cannot change the flag; the
+                    // backslash carry only matters at a row boundary.
+                    previousWasBackslash = row.unicodeScalars.last == "\\"
+                    break
+                }
                 previousWasBackslash = scalar == "\\"
             }
         }
-        return false
+        return flags
     }
 
     // MARK: - Mapping
@@ -149,7 +178,8 @@ public struct TerminalMathGridScanner: Sendable {
     ///
     /// - Parameters:
     ///   - spans: The spans found in the logical line.
-    ///   - stripped: The text the span ranges index.
+    ///   - stripped: The text the span ranges index; for grid rows this is
+    ///     the logical line itself.
     ///   - rowStarts: Character offset of each row's first cell within the
     ///     logical line, ascending, starting at 0.
     ///   - firstRow: Viewport row of `rowStarts[0]`.

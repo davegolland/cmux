@@ -7,9 +7,10 @@ import Foundation
 /// `TerminalMathSurfaceController` on the main actor.
 ///
 /// The tee raises a per-surface `AtomicBooleanGate` once and hops here; the
-/// controller scans the rendered grid on the next frame and calls
-/// ``markScanned(surfaceID:)`` so the IO thread can re-arm. Sustained output
-/// therefore costs one main-actor hop per grid scan, not one per chunk.
+/// controller scans the rendered grid on the next post-parse frame and calls
+/// ``markScanned(surfaceID:)`` only after that frame-driven scan, so the IO
+/// thread can re-arm. Sustained output therefore costs one main-actor hop per
+/// grid scan, not one per chunk.
 @MainActor
 final class TerminalMathCandidateRouter {
     // nonisolated: the singleton itself is an immutable `let` constructed
@@ -54,11 +55,10 @@ final class TerminalMathCandidateRouter {
             markScanned(surfaceID: surfaceID)
             return
         }
-        surface.hostedView.surfaceView.terminalMathController.noteCandidate()
         // The tee fires before Ghostty's VT parser consumes the bytes, so the
-        // frame that already rendered may predate them. Schedule a fresh tick
-        // to guarantee one post-parse frame notification.
-        GhosttyApp.shared.scheduleTick()
+        // controller never scans here: it retains frame demand and requests a
+        // tick, and the next post-parse frame drives the scan.
+        surface.hostedView.surfaceView.terminalMathController.noteCandidate()
     }
 
     /// Re-arms the surface's edge flag after the controller scanned the grid.
@@ -84,8 +84,11 @@ final class TerminalMathCandidateRouter {
 
     // MARK: Enablement
 
-    /// Flips the process-wide gate and, when turning off, clears every live
-    /// surface's overlay so no stale raster stays on screen.
+    /// Flips the process-wide gate. Turning off clears every live surface's
+    /// overlay so no stale raster stays on screen; turning on makes every
+    /// live surface rescan its visible grid once (the controller treats
+    /// enabling like a candidate) and requests a tick so the frame that
+    /// drives those scans arrives even in an idle terminal.
     ///
     /// - Parameter enabled: The new `terminal.renderMath` value.
     static func setEnabled(_ enabled: Bool) {
@@ -93,7 +96,9 @@ final class TerminalMathCandidateRouter {
         for surface in GhosttyApp.terminalSurfaceRegistry.allTerminalSurfaces() {
             surface.hostedView.surfaceView.terminalMathController.setEnabled(enabled)
         }
-        if !enabled {
+        if enabled {
+            GhosttyApp.shared.scheduleTick()
+        } else {
             for surfaceID in shared.pendingSurfaceIDs {
                 shared.flagsBySurfaceID[surfaceID]?.storeRelease(false)
             }

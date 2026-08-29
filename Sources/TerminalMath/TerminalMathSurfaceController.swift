@@ -7,41 +7,52 @@ import CMUXMobileCore
 /// Drives one terminal view's math overlay: scans the rendered grid for
 /// delimited LaTeX, rasterizes it, and paints ``TerminalMathOverlayView``.
 ///
-/// Demand is pull-based. The byte tee marks a candidate through
-/// `TerminalMathCandidateRouter`, which calls ``noteCandidate()``; the
-/// controller then retains the view-local rendered-frame demand and scans on
-/// every frame while there is a candidate or a visible placement. Two idle
-/// scans with nothing found release the demand again so an idle terminal
-/// costs nothing.
+/// The controller is a thin adapter around `TerminalMathScanPolicy`: every
+/// input (a candidate from the byte tee, a rendered frame, a scroll, resize,
+/// theme, or config change, a raster completion, the enable toggle) is fed to
+/// the policy as an event and the returned actions are executed here. The
+/// policy owns the demand, throttling, tee re-arm, and idle-release rules; the
+/// controller owns the grid export, the raster cache lookups, and the overlay
+/// model.
 @MainActor
 final class TerminalMathSurfaceController {
     /// Owning view; the view retains the controller and calls ``invalidate()`` in `deinit`.
     unowned let view: GhosttyNSView
 
+    /// Scan scheduling state machine (pure, tested in CmuxAgentChat).
+    private(set) var policy = TerminalMathScanPolicy()
     /// Whether the feature is enabled for this surface.
-    private(set) var isEnabled = true
-    /// Set by the router when the PTY tee saw a delimiter since the last scan.
-    private var hasCandidate = false
-    /// Consecutive scans that found nothing while no candidate was pending.
-    private var idleScanCount = 0
+    var isEnabled: Bool { policy.isEnabled }
     /// Placements from the most recent scan.
     private(set) var lastPlacements: [TerminalMathPlacement] = []
     /// Placements dropped by the fit rule in the most recent sync (debug aid).
     private(set) var lastRejectedByFit: [TerminalMathPlacement] = []
+    /// Placements whose raster the rasterizer rejected (KaTeX or pre-check),
+    /// in the most recent sync; never re-requested.
+    private(set) var lastRejectedByRaster: [TerminalMathPlacement] = []
+    /// Whether the overlay is hidden because a selection or copy mode is
+    /// active over the grid; placements are kept so it returns afterwards.
+    private(set) var isHiddenForSelection = false
 
     private var releaseDemand: (() -> Void)?
     private var frameObserver: (any NSObjectProtocol)?
-    private var appearanceObservers: [any NSObjectProtocol] = []
-    private var isScanScheduled = false
+    private var viewportObservers: [any NSObjectProtocol] = []
+    private var trailingScanTask: Task<Void, Never>?
     private var inFlightRasterKeys: Set<RasterKey> = []
+    /// Keys whose raster failed transiently (nil without a cached rejection),
+    /// with the earliest time they may be requested again and the delay to
+    /// apply on the next failure.
+    private var failedKeys: [RasterKey: (retryNotBefore: TimeInterval, delay: TimeInterval)] = [:]
     private var isInvalidated = false
 
     /// Upper bound on concurrent raster jobs for one surface.
     private static let maxInFlightRasters = 4
-    /// Idle scans before the local rendered-frame demand is released.
-    private static let idleScansBeforeRelease = 2
+    /// First retry delay after a transient raster failure.
+    private static let initialRetryDelay: TimeInterval = 1
+    /// Longest retry delay after repeated transient raster failures.
+    private static let maxRetryDelay: TimeInterval = 30
 
-    /// Identity of one raster request, for in-flight deduplication.
+    /// Identity of one raster request, for in-flight deduplication and backoff.
     private struct RasterKey: Hashable {
         let source: String
         let isDisplay: Bool
@@ -57,15 +68,10 @@ final class TerminalMathSurfaceController {
 
     // MARK: - Entry points
 
-    /// Marks that the tee saw a math delimiter; arms frame tracking.
+    /// Marks that the tee saw a math delimiter; the next rendered frame scans.
     func noteCandidate() {
-        guard isEnabled, !isInvalidated else { return }
-        hasCandidate = true
-        idleScanCount = 0
-        retainDemandIfNeeded()
-        installFrameObserverIfNeeded()
-        installAppearanceObserversIfNeeded()
-        scheduleScan()
+        guard !isInvalidated else { return }
+        apply(.candidate)
     }
 
     /// Called from `GhosttyNSView.layout()`; keeps the overlay sized to the view.
@@ -76,27 +82,78 @@ final class TerminalMathSurfaceController {
             overlay.frame = view.bounds
         }
         guard !lastPlacements.isEmpty else { return }
-        scheduleScan()
+        apply(.viewportChanged(now: Self.now()))
     }
 
     /// Enables or disables the overlay. Disabling clears everything and
-    /// releases demand; enabling is a no-op until the next candidate.
+    /// releases demand; enabling rescans the visible grid once so math that
+    /// is already on screen is picked up.
     func setEnabled(_ enabled: Bool) {
-        isEnabled = enabled
-        guard !enabled else { return }
-        clearPlacements()
-        releaseDemandIfNeeded()
-        removeObservers()
-        hasCandidate = false
+        guard !isInvalidated else { return }
+        apply(.enabled(enabled))
+        if !enabled {
+            removeObservers()
+        }
     }
 
     /// Releases demand and observers; safe to call more than once and from `deinit`.
     func invalidate() {
         isInvalidated = true
+        trailingScanTask?.cancel()
+        trailingScanTask = nil
         releaseDemandIfNeeded()
         removeObservers()
         lastPlacements = []
         lastRejectedByFit = []
+        lastRejectedByRaster = []
+        failedKeys = [:]
+    }
+
+    // MARK: - Policy adapter
+
+    private static func now() -> TimeInterval {
+        ProcessInfo.processInfo.systemUptime
+    }
+
+    private func apply(_ event: TerminalMathScanPolicy.Event) {
+        guard !isInvalidated else { return }
+        execute(policy.handle(event))
+    }
+
+    private func execute(_ actions: [TerminalMathScanPolicy.Action]) {
+        for action in actions {
+            guard !isInvalidated else { return }
+            switch action {
+            case .scanNow(let reason):
+                scan(reason: reason)
+            case .scheduleTrailingScan(let after):
+                scheduleTrailingScan(after: after)
+            case .retainDemand:
+                retainDemandIfNeeded()
+                installFrameObserverIfNeeded()
+                installViewportObserversIfNeeded()
+            case .releaseDemand:
+                releaseDemandIfNeeded()
+            case .rearmTee:
+                if let surfaceID = view.terminalSurface?.id {
+                    TerminalMathCandidateRouter.shared.markScanned(surfaceID: surfaceID)
+                }
+            case .clearOverlay:
+                clearPlacements()
+            case .requestTick:
+                GhosttyApp.shared.scheduleTick()
+            }
+        }
+    }
+
+    private func scheduleTrailingScan(after delay: TimeInterval) {
+        trailingScanTask?.cancel()
+        trailingScanTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(max(0, delay) * 1_000_000_000))
+            guard !Task.isCancelled, let self else { return }
+            self.trailingScanTask = nil
+            self.apply(.trailingScanDue(now: Self.now()))
+        }
     }
 
     // MARK: - Demand and observers
@@ -119,42 +176,39 @@ final class TerminalMathSurfaceController {
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self else { return }
-                guard self.hasCandidate || !self.lastPlacements.isEmpty else { return }
-                self.scheduleScan()
+                self?.apply(.frame(now: Self.now()))
             }
         }
     }
 
-    private func installAppearanceObserversIfNeeded() {
-        guard appearanceObservers.isEmpty else { return }
+    private func installViewportObserversIfNeeded() {
+        guard viewportObservers.isEmpty else { return }
         let center = NotificationCenter.default
-        let rescan: @Sendable (Notification) -> Void = { [weak self] _ in
+        let viewportChanged: @Sendable (Notification) -> Void = { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.scheduleScan()
+                self?.apply(.viewportChanged(now: Self.now()))
             }
         }
-        appearanceObservers.append(center.addObserver(
-            forName: .ghosttyDefaultBackgroundDidChange, object: nil, queue: .main, using: rescan
+        viewportObservers.append(center.addObserver(
+            forName: .ghosttyDefaultBackgroundDidChange, object: nil, queue: .main, using: viewportChanged
         ))
-        appearanceObservers.append(center.addObserver(
-            forName: .ghosttyConfigDidReload, object: nil, queue: .main, using: rescan
+        viewportObservers.append(center.addObserver(
+            forName: .ghosttyConfigDidReload, object: nil, queue: .main, using: viewportChanged
         ))
-        appearanceObservers.append(center.addObserver(
-            forName: .ghosttyDidUpdateCellSize, object: view, queue: .main, using: rescan
+        viewportObservers.append(center.addObserver(
+            forName: .ghosttyDidUpdateCellSize, object: view, queue: .main, using: viewportChanged
         ))
-        appearanceObservers.append(center.addObserver(
-            forName: .ghosttyDidUpdateScrollbar, object: view, queue: .main, using: rescan
+        viewportObservers.append(center.addObserver(
+            forName: .ghosttyDidUpdateScrollbar, object: view, queue: .main, using: viewportChanged
         ))
-        // Theme changes post the surface UUID as the object; match by hand.
-        appearanceObservers.append(center.addObserver(
+        viewportObservers.append(center.addObserver(
             forName: .ghosttySurfaceThemeDidChange, object: nil, queue: .main
         ) { [weak self] notification in
             MainActor.assumeIsolated {
                 guard let self,
                       let changed = notification.object as? UUID,
                       changed == self.view.terminalSurface?.id else { return }
-                self.scheduleScan()
+                self.apply(.viewportChanged(now: Self.now()))
             }
         })
     }
@@ -165,35 +219,17 @@ final class TerminalMathSurfaceController {
             center.removeObserver(frameObserver)
             self.frameObserver = nil
         }
-        for observer in appearanceObservers {
+        for observer in viewportObservers {
             center.removeObserver(observer)
         }
-        appearanceObservers.removeAll()
+        viewportObservers.removeAll()
     }
 
     // MARK: - Scanning
 
-    /// Coalesces scans to one per run-loop turn, like
-    /// `MobileTerminalRenderObserver.scheduleTerminalUpdateFlush`.
-    private func scheduleScan() {
-        guard isEnabled, !isInvalidated, !isScanScheduled else { return }
-        isScanScheduled = true
-        Task { @MainActor [weak self] in
-            self?.isScanScheduled = false
-            self?.scan()
-        }
-    }
-
-    private func scan() {
-        guard isEnabled, !isInvalidated else { return }
-        let hadCandidate = hasCandidate
-        hasCandidate = false
-        defer {
-            if let surfaceID = view.terminalSurface?.id {
-                TerminalMathCandidateRouter.shared.markScanned(surfaceID: surfaceID)
-            }
-        }
-
+    /// Reads the grid, scans it, syncs the overlay, and reports the result to
+    /// the policy (which decides about the candidate, the tee, and demand).
+    private func scan(reason: TerminalMathScanPolicy.ScanReason) {
         guard let surface = view.terminalSurface,
               let snapshot = surface.mobileRenderGridFrame(
                 stateSeq: 0,
@@ -203,13 +239,13 @@ final class TerminalMathSurfaceController {
                 anchor: .viewport
               ) else {
             clearPlacements()
-            noteScanResult(foundPlacements: false, hadCandidate: hadCandidate)
+            apply(.scanCompleted(found: false, isAlternateScreen: false, now: Self.now()))
             return
         }
         let frame = snapshot.frame
         guard frame.activeScreen != .alternate else {
             clearPlacements()
-            noteScanResult(foundPlacements: false, hadCandidate: hadCandidate)
+            apply(.scanCompleted(found: false, isAlternateScreen: true, now: Self.now()))
             return
         }
 
@@ -222,24 +258,15 @@ final class TerminalMathSurfaceController {
             cursor: cursor
         )
         lastPlacements = placements
-        noteScanResult(foundPlacements: !placements.isEmpty, hadCandidate: hadCandidate)
-        syncOverlay(frame: frame)
-    }
-
-    private func noteScanResult(foundPlacements: Bool, hadCandidate: Bool) {
-        if foundPlacements || hadCandidate {
-            idleScanCount = 0
-            return
-        }
-        idleScanCount += 1
-        if idleScanCount >= Self.idleScansBeforeRelease {
-            releaseDemandIfNeeded()
-        }
+        syncOverlay(frame: frame, rows: snapshot.rows)
+        apply(.scanCompleted(found: !placements.isEmpty, isAlternateScreen: false, now: Self.now()))
     }
 
     private func clearPlacements() {
         lastPlacements = []
         lastRejectedByFit = []
+        lastRejectedByRaster = []
+        isHiddenForSelection = false
         let overlay = view.terminalMathOverlayView
         if !overlay.model.items.isEmpty {
             overlay.model = TerminalMathOverlayModel()
@@ -249,9 +276,28 @@ final class TerminalMathSurfaceController {
 
     // MARK: - Overlay sync
 
+    /// Whether Ghostty is drawing a mouse selection or the keyboard copy mode
+    /// is active; the opaque patches would hide that highlight, so the
+    /// overlay steps aside until the selection ends.
+    private var selectionIsActive: Bool {
+        view.isKeyboardCopyModeActive || view.terminalMathSurfaceHasSelection()
+    }
+
+    /// Whether display math on `placement` may overhang its neighbour rows:
+    /// both the row above and the row below the first segment are blank (or
+    /// off the grid), so the overhang cannot paint over unpatched text.
+    private static func allowsOverhang(for placement: TerminalMathPlacement, rows: [String]) -> Bool {
+        func isBlank(_ row: Int) -> Bool {
+            guard rows.indices.contains(row) else { return true }
+            return rows[row].allSatisfy(\.isWhitespace)
+        }
+        return isBlank(placement.row - 1) && isBlank(placement.row + 1)
+    }
+
     /// Rebuilds the overlay model from `lastPlacements` and the raster cache,
-    /// kicking off bounded async rasters for anything not yet cached.
-    private func syncOverlay(frame: MobileTerminalRenderGridFrame) {
+    /// kicking off bounded async rasters for anything not yet cached and not
+    /// known to be rejected or in backoff.
+    private func syncOverlay(frame: MobileTerminalRenderGridFrame, rows: [String]) {
         let overlay = view.terminalMathOverlayView
         guard !lastPlacements.isEmpty,
               let metrics = view.terminalMathGridMetrics(),
@@ -265,9 +311,13 @@ final class TerminalMathSurfaceController {
             ?? GhosttyApp.shared.defaultForegroundColor
         let scale = view.window?.backingScaleFactor ?? 2
         let colorHex = foregroundColor.hexString()
+        let now = Self.now()
+        let rasterizer = TerminalMathRasterizer.shared
 
         var items: [TerminalMathOverlayModel.Item] = []
-        var rejected: [TerminalMathPlacement] = []
+        var rejectedByFit: [TerminalMathPlacement] = []
+        var rejectedByRaster: [TerminalMathPlacement] = []
+        var liveKeys: Set<RasterKey> = []
         for placement in lastPlacements {
             let key = RasterKey(
                 source: placement.source,
@@ -276,13 +326,27 @@ final class TerminalMathSurfaceController {
                 colorHex: colorHex,
                 scale: scale
             )
-            guard let raster = TerminalMathRasterizer.shared.cachedRaster(
+            liveKeys.insert(key)
+            if rasterizer.isCachedRejection(
+                source: placement.source,
+                isDisplay: placement.isDisplay,
+                fontSizePt: fontSizePt,
+                color: foregroundColor,
+                scale: scale
+            ) {
+                rejectedByRaster.append(placement)
+                continue
+            }
+            guard let raster = rasterizer.cachedRaster(
                 source: placement.source,
                 isDisplay: placement.isDisplay,
                 fontSizePt: fontSizePt,
                 color: foregroundColor,
                 scale: scale
             ) else {
+                if let failed = failedKeys[key], now < failed.retryNotBefore {
+                    continue
+                }
                 requestRaster(key: key, color: foregroundColor)
                 continue
             }
@@ -295,9 +359,10 @@ final class TerminalMathSurfaceController {
                 for: placement,
                 raster: size,
                 metrics: metrics,
-                isDisplay: placement.isDisplay
+                isDisplay: placement.isDisplay,
+                allowsOverhang: placement.isDisplay && Self.allowsOverhang(for: placement, rows: rows)
             ) else {
-                rejected.append(placement)
+                rejectedByFit.append(placement)
                 continue
             }
             items.append(TerminalMathOverlayModel.Item(
@@ -306,13 +371,17 @@ final class TerminalMathSurfaceController {
                 image: raster.image
             ))
         }
-        lastRejectedByFit = rejected
+        lastRejectedByFit = rejectedByFit
+        lastRejectedByRaster = rejectedByRaster
+        // Backoff entries only matter while their placement is on screen.
+        failedKeys = failedKeys.filter { liveKeys.contains($0.key) }
 
         if overlay.frame != view.bounds {
             overlay.frame = view.bounds
         }
         overlay.model = TerminalMathOverlayModel(items: items, backgroundColor: backgroundColor)
-        overlay.isHidden = items.isEmpty
+        isHiddenForSelection = !items.isEmpty && selectionIsActive
+        overlay.isHidden = items.isEmpty || isHiddenForSelection
     }
 
     private func requestRaster(key: RasterKey, color: NSColor) {
@@ -320,7 +389,7 @@ final class TerminalMathSurfaceController {
               inFlightRasterKeys.count < Self.maxInFlightRasters else { return }
         inFlightRasterKeys.insert(key)
         Task { @MainActor [weak self] in
-            _ = await TerminalMathRasterizer.shared.raster(
+            let raster = await TerminalMathRasterizer.shared.raster(
                 source: key.source,
                 isDisplay: key.isDisplay,
                 fontSizePt: key.fontSizePt,
@@ -329,10 +398,18 @@ final class TerminalMathSurfaceController {
             )
             guard let self else { return }
             self.inFlightRasterKeys.remove(key)
+            guard raster != nil else {
+                // A cached rejection is skipped by the next sync; anything
+                // else is transient, so back off before asking again.
+                let delay = self.failedKeys[key].map { min($0.delay * 2, Self.maxRetryDelay) }
+                    ?? Self.initialRetryDelay
+                self.failedKeys[key] = (retryNotBefore: Self.now() + delay, delay: delay)
+                return
+            }
+            self.failedKeys.removeValue(forKey: key)
             // A completion only triggers another scan; that scan re-reads the
             // grid so a placement that has since scrolled away is not painted.
-            guard !self.lastPlacements.isEmpty || self.hasCandidate else { return }
-            self.scheduleScan()
+            self.apply(.rasterReady(now: Self.now()))
         }
     }
 
@@ -379,9 +456,17 @@ final class TerminalMathSurfaceController {
     func debugDump() -> String {
         var lines: [String] = []
         lines.append(
-            "terminalMath enabled=\(isEnabled) candidate=\(hasCandidate) demand=\(releaseDemand != nil) " +
-            "inFlight=\(inFlightRasterKeys.count) overlayHidden=\(view.terminalMathOverlayView.isHidden) " +
+            "terminalMath enabled=\(isEnabled) demand=\(releaseDemand != nil) " +
+            "inFlight=\(inFlightRasterKeys.count) backoff=\(failedKeys.count) " +
+            "overlayHidden=\(view.terminalMathOverlayView.isHidden) hiddenForSelection=\(isHiddenForSelection) " +
             "items=\(view.terminalMathOverlayView.model.items.count)"
+        )
+        lines.append(
+            "policy candidate=\(policy.hasCandidate) placements=\(policy.hasPlacements) " +
+            "demandRetained=\(policy.demandRetained) idleFrameScans=\(policy.idleFrameScans) " +
+            "trailingPending=\(policy.trailingScanPending) " +
+            "activeScan=\(policy.activeScanReason.map { "\($0)" } ?? "none") " +
+            "lastScanAt=\(policy.lastScanAt.map { "\($0)" } ?? "never")"
         )
         if let metrics = view.terminalMathGridMetrics() {
             lines.append(
@@ -393,7 +478,8 @@ final class TerminalMathSurfaceController {
             lines.append(
                 "placement row=\(placement.row) cols=\(placement.startColumn)..<\(placement.endColumn) " +
                 "wrapped=\(placement.continuationRows.count) display=\(placement.isDisplay) " +
-                "fitRejected=\(lastRejectedByFit.contains(placement)) source=\(placement.source)"
+                "fitRejected=\(lastRejectedByFit.contains(placement)) " +
+                "rasterRejected=\(lastRejectedByRaster.contains(placement)) source=\(placement.source)"
             )
         }
         if let reason = TerminalMathRasterizer.shared.lastRejectionReason {
