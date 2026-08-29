@@ -1,0 +1,133 @@
+name: fork-compile
+
+# Fork-only compile and focused-test gate on GitHub-hosted macOS runners.
+# Not part of upstream CI (which uses self-hosted warp/blacksmith runners).
+# Trigger: gh workflow run fork-compile.yml --ref <branch> -f tests=<suite,suite>
+
+# Push-triggered on ci/** branches so the workflow file is taken from the
+# pushed branch (no default-branch copy needed). The suites to run come from
+# .github/fork-compile-tests.txt (one cmuxTests suite per line; empty file or
+# missing file = compile only).
+on:
+  push:
+    branches: ['ci/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-compile-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compile:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-26, macos-15]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    env:
+      CMUX_SKIP_ZIG_BUILD: "1"
+      SWIFT_BACKTRACE: "interactive=no,timeout=0s,symbolicate=off,color=no"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Select Xcode
+        run: |
+          set -euo pipefail
+          ls /Applications | grep -i xcode || true
+          ./scripts/select-ci-xcode.sh
+          xcodebuild -version
+
+      - name: Capture Ghostty revision
+        id: ghostty-revision
+        run: echo "sha=$(git -C ghostty rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache GhosttyKit.xcframework
+        id: cache-ghosttykit
+        uses: actions/cache@v4
+        with:
+          path: GhosttyKit.xcframework
+          key: ghosttykit-sentry-off-v1-${{ steps.ghostty-revision.outputs.sha }}
+
+      - name: Download pre-built GhosttyKit.xcframework
+        if: steps.cache-ghosttykit.outputs.cache-hit != 'true'
+        run: ./scripts/download-prebuilt-ghosttykit.sh
+
+      - name: Install Rust
+        run: ./scripts/install-rust-ci.sh
+
+      - name: Cache Swift packages
+        uses: actions/cache@v4
+        with:
+          path: .ci-source-packages
+          key: spm-${{ hashFiles('cmux.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: spm-
+
+      - name: Resolve Swift packages
+        run: |
+          set -euo pipefail
+          mkdir -p .ci-source-packages
+          xcodebuild -project cmux.xcodeproj -scheme cmux-unit -configuration Debug \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            -clonedSourcePackagesDirPath "$PWD/.ci-source-packages" \
+            -resolvePackageDependencies
+
+      - name: Build app (Debug)
+        run: |
+          set -euo pipefail
+          xcodebuild -project cmux.xcodeproj -scheme cmux -configuration Debug \
+            -destination "platform=macOS" \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            -clonedSourcePackagesDirPath "$PWD/.ci-source-packages" \
+            -disableAutomaticPackageResolution \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tee build.log | grep -E "error:|warning: .*(math|Math|katex|KaTeX)|BUILD (SUCCEEDED|FAILED)" || true
+          grep -q "BUILD SUCCEEDED" build.log
+
+      - name: Build tests (cmux-unit)
+        run: |
+          set -euo pipefail
+          xcodebuild -project cmux.xcodeproj -scheme cmux-unit -configuration Debug \
+            -destination "platform=macOS" \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            -clonedSourcePackagesDirPath "$PWD/.ci-source-packages" \
+            -disableAutomaticPackageResolution \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" \
+            build-for-testing 2>&1 | tee build-tests.log | grep -E "error:|BUILD (SUCCEEDED|FAILED)" || true
+          grep -q "BUILD SUCCEEDED" build-tests.log
+
+      - name: Run focused tests
+        run: |
+          set -euo pipefail
+          args=()
+          if [ -f .github/fork-compile-tests.txt ]; then
+            while IFS= read -r s; do
+              [ -n "$s" ] && args+=("-only-testing:cmuxTests/$s")
+            done < .github/fork-compile-tests.txt
+          fi
+          if [ "${#args[@]}" -eq 0 ]; then echo "no suites listed; compile only"; exit 0; fi
+          xcodebuild -project cmux.xcodeproj -scheme cmux-unit -configuration Debug \
+            -destination "platform=macOS" \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            -clonedSourcePackagesDirPath "$PWD/.ci-source-packages" \
+            -disableAutomaticPackageResolution \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" \
+            "${args[@]}" test-without-building 2>&1 | tee test.log | grep -E "Test Suite|Test Case|passed|failed|error:|\bTEST\b" || true
+          grep -qE "TEST (SUCCEEDED|EXECUTE SUCCEEDED)" test.log
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ github.run_id }}-${{ matrix.runner }}
+          path: |
+            build.log
+            build-tests.log
+            test.log
+          if-no-files-found: ignore
