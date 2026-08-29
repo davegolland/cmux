@@ -1,6 +1,6 @@
 # Typeset math in the terminal grid
 
-Status: design. Groundwork shipped: `TerminalMathSpanDetector` (Packages/Shared/CmuxAgentChat) and KaTeX in the markdown viewer (`cmux-math.js`, `katex.min.js`, `katex-fonts.min.css`).
+Status: implemented (phases 1-5) on `feat/terminal-math-overlay`; not yet dogfooded on a running build. The section "As built" at the end records where the implementation departs from the design below.
 
 ## Problem
 
@@ -73,3 +73,17 @@ Phases 2-5 are Swift in the app target and cannot be compiled or run on the auth
 - Unit: placement math and wrap stitching with fixture frames; rasterizer fit rules with a fake image size.
 - Integration (tagged Debug build, `./scripts/reload.sh --tag terminal-math --launch`): run `claude` and ask for the requirements document's acceptance answer; check every row of the acceptance table on screen; select and copy a formula and paste into a new prompt; resize, scroll, split, and zoom; switch the Ghostty theme; open vim and confirm no overlay.
 - Performance: the tee gate adds one byte scan per chunk; measure typing latency with the `cmux-debugging` skill's checks before and after, and keep the scan off the IO thread.
+
+## As built
+
+The implementation follows the decisions above with these corrections, found while reading the code the design cites.
+
+- `MobileTerminalRenderGridFrame.RowSpan` carries no wrap flag. `TerminalMathGridScanner` (CmuxAgentChat, pure) infers a soft wrap the way `TerminalArtifactTapHitTester` does: row r continues onto r+1 when r fills the width and r+1 starts with a non-space cell. A logical line is cut after 16 rows (32 when the following rows keep holding delimiters, so a closer is never orphaned into the next line), and a source longer than 1024 characters is dropped.
+- `GhosttyFlashOverlayView` is `final`; `TerminalMathOverlayView` copies its two overrides (`acceptsFirstResponder = false`, `hitTest -> nil`) and is flipped. It sits below the copy-mode cursor overlay.
+- No `RenderedFrameDeliveryReason` case was added. The controller retains the view-local rendered-frame demand (`retainLocalRenderedFrameNotifications()`) and observes `.ghosttyDidRenderFrame` for its own view, so the CmuxTerminal package is unchanged.
+- The tee gate is `TerminalMathByteGate` (CmuxTerminalCore), a byte-level state machine, because `TerminalMathSpanDetector.hasMath(in:)` needs a `String`. It ignores bytes inside ESC/CSI/OSC sequences, tracks DEC private modes 47/1047/1049 so nothing fires on the alternate screen (leaving it fires once), and bumps a revision at most once per chunk. `TerminalOutputTeeContext` arms an `AtomicBooleanGate` and hops to `TerminalMathCandidateRouter` on the main actor; the router clears the flag after each frame-driven scan.
+- Scan timing is a pure state machine, `TerminalMathScanPolicy` (CmuxAgentChat): a candidate only retains demand and requests a tick; the next rendered frame scans; frame-driven scans are throttled to one per 100 ms with a single trailing scan while placements are visible; two empty frame-driven scans release demand; a viewport change with nothing on screen probes at most every 500 ms without demand; enabling the setting scans at once. `TerminalMathSurfaceController` is the adapter that executes the policy's actions.
+- The rasterizer loads `katex.min.js` and `katex-fonts.min.css` into a hidden, windowless `WKWebView` (`drawsBackground = false` is required for a transparent snapshot) and applies the same guards as `cmux-math.js`: `trust: false`, `maxExpand: 100`, `maxSize: 100`, 4 KB body cap, no macro definitions. Rejections are cached; transient failures are cached with a 2 s backoff doubling to 30 s; three page failures in a minute start a 60 s cooldown; the web view is dropped after five idle minutes. The KaTeX font size is the surface's live point size (`ghostty_surface_font_size`) times 0.52/0.431 so KaTeX's x-height matches the terminal font.
+- The overlay hides while Ghostty has a selection or copy mode is active, because the opaque patch would cover the selection highlight. The image is centred on the row; Ghostty exposes no in-cell baseline. Display math may overhang half a cell into the rows above and below only when both rows exist and are blank.
+- The toggle is global (`terminal.renderMath`), not per surface: `toggleTerminalMathRendering` flips the setting for every terminal.
+
