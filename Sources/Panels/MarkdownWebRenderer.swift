@@ -654,6 +654,57 @@ struct MarkdownWebRenderer: NSViewRepresentable {
             )
         }
 
+        /// The ordered JS fragments to inject for a lazily loaded library, or
+        /// nil for an unknown name. Separate from `handleLibRequest` so the
+        /// asset names and KaTeX's stylesheet-before-library order can be
+        /// checked without a WKWebView.
+        static func lazyLibrarySources(
+            for lib: String,
+            assets: MarkdownViewerAssets
+        ) -> [String]? {
+            switch lib {
+            case "mermaid":
+                return [assets.lazyAsset(name: "mermaid.min", ext: "js")]
+            case "vega-lite":
+                // Order matters: vega first, then vega-lite, then vega-embed.
+                return [
+                    assets.lazyAsset(name: "vega.min", ext: "js"),
+                    assets.lazyAsset(name: "vega-lite.min", ext: "js"),
+                    assets.lazyAsset(name: "vega-embed.min", ext: "js"),
+                ]
+            case "katex":
+                // The stylesheet must exist before katex.min.js renders. Its
+                // fonts are data: URIs (scripts/embed-katex-fonts.py), so no
+                // URL scheme handler is needed: relative font paths would
+                // resolve against the user's markdown file, not the bundle.
+                let css = assets.lazyAsset(name: "katex-fonts.min", ext: "css")
+                return [
+                    Self.styleInjectionScript(css: css, id: "cmux-katex-css"),
+                    assets.lazyAsset(name: "katex.min", ext: "js"),
+                ]
+            default:
+                return nil
+            }
+        }
+
+        /// JS that appends `css` to the document head as a `<style>` element
+        /// once. The CSS is JSON-encoded so any content splices safely.
+        static func styleInjectionScript(css: String, id: String) -> String {
+            let cssLiteral = (try? JSONSerialization.data(withJSONObject: [css]))
+                .flatMap { String(data: $0, encoding: .utf8) } ?? "[\"\"]"
+            let idLiteral = (try? JSONSerialization.data(withJSONObject: [id]))
+                .flatMap { String(data: $0, encoding: .utf8) } ?? "[\"\"]"
+            return """
+            (function(css, id){
+              if (document.getElementById(id)) { return; }
+              var styleEl = document.createElement('style');
+              styleEl.id = id;
+              styleEl.textContent = css;
+              (document.head || document.documentElement).appendChild(styleEl);
+            })(\(cssLiteral)[0], \(idLiteral)[0]);
+            """
+        }
+
         private func handleLibRequest(_ lib: String) {
             guard let webView else { return }
             // Load each library at most once per WebView lifetime. State is
@@ -662,19 +713,7 @@ struct MarkdownWebRenderer: NSViewRepresentable {
             if requestedLibs.contains(lib) { return }
             requestedLibs.insert(lib)
 
-            let assets = MarkdownViewerAssets.shared
-            let sources: [String]
-            switch lib {
-            case "mermaid":
-                sources = [assets.lazyAsset(name: "mermaid.min", ext: "js")]
-            case "vega-lite":
-                // Order matters: vega first, then vega-lite, then vega-embed.
-                sources = [
-                    assets.lazyAsset(name: "vega.min", ext: "js"),
-                    assets.lazyAsset(name: "vega-lite.min", ext: "js"),
-                    assets.lazyAsset(name: "vega-embed.min", ext: "js"),
-                ]
-            default:
+            guard let sources = Self.lazyLibrarySources(for: lib, assets: MarkdownViewerAssets.shared) else {
                 return
             }
 
@@ -692,8 +731,13 @@ struct MarkdownWebRenderer: NSViewRepresentable {
             let suffix = "\nwindow.__cmuxLibLoaded && window.__cmuxLibLoaded(\(libLiteral)[0]);"
             webView.evaluateJavaScript(injection + suffix) { [weak self] _, error in
                 if let error {
-                    // Allow retry on next render if this attempt failed.
+                    // Allow retry on next render if this attempt failed, and
+                    // tell the page so pending blocks degrade now.
                     self?.requestedLibs.remove(lib)
+                    self?.webView?.evaluateJavaScript(
+                        "window.__cmuxLibFailed && window.__cmuxLibFailed(\(libLiteral)[0]);",
+                        completionHandler: nil
+                    )
 #if DEBUG
                     NSLog("MarkdownPanel: failed to load \(lib): \(error)")
 #endif

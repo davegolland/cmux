@@ -26,8 +26,8 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 1
 fi
 
-PLAIN_ASSETS="shell.html highlight-github.css highlight-github-dark.css github-markdown.css"
-JS_ASSETS="marked.min.js highlight.min.js viewer-navigation.js mermaid.min.js vega.min.js vega-lite.min.js vega-embed.min.js"
+PLAIN_ASSETS="shell.html highlight-github.css highlight-github-dark.css github-markdown.css katex-fonts.min.css"
+JS_ASSETS="marked.min.js highlight.min.js viewer-navigation.js cmux-math.js mermaid.min.js vega.min.js vega-lite.min.js vega-embed.min.js katex.min.js"
 
 for name in $PLAIN_ASSETS $JS_ASSETS; do
   if [ ! -f "$SRC_DIR/$name" ]; then

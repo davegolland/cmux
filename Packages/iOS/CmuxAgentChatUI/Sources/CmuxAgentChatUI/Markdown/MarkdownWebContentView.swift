@@ -273,6 +273,10 @@ struct MarkdownWebContentView: UIViewRepresentable {
                 specs = [("mermaid.min", "js")]
             case "vega-lite":
                 specs = [("vega.min", "js"), ("vega-lite.min", "js"), ("vega-embed.min", "js")]
+            case "katex":
+                // Stylesheet first (fonts are inlined as data: URIs), then
+                // the library. Mirrors the macOS `lazyLibrarySources`.
+                specs = [("katex-fonts.min", "css"), ("katex.min", "js")]
             default:
                 return
             }
@@ -280,29 +284,59 @@ struct MarkdownWebContentView: UIViewRepresentable {
             // The diagram bundles are megabytes; read and inflate them off the
             // main actor, then inject on main.
             Task { [weak self] in
-                guard let sources = await MarkdownWebViewerAssets.shared.assets(specs),
+                let libLiteral = (try? JSONSerialization.data(withJSONObject: [lib]))
+                    .flatMap { String(data: $0, encoding: .utf8) } ?? "[\"\"]"
+                guard var sources = await MarkdownWebViewerAssets.shared.assets(specs),
                       sources.contains(where: { !$0.isEmpty }) else {
                     self?.requestedLibs.remove(lib)
+                    self?.webView?.evaluateJavaScript(
+                        "window.__cmuxLibFailed && window.__cmuxLibFailed(\(libLiteral)[0]);",
+                        completionHandler: nil
+                    )
                     return
                 }
                 guard let self, let webView = self.webView else { return }
+
+                if lib == "katex", let css = sources.first {
+                    sources[0] = Self.styleInjectionScript(css: css, id: "cmux-katex-css")
+                }
 
                 var injection = ""
                 for src in sources where !src.isEmpty {
                     injection += src
                     injection += "\n;"
                 }
-                let libLiteral = (try? JSONSerialization.data(withJSONObject: [lib]))
-                    .flatMap { String(data: $0, encoding: .utf8) } ?? "[\"\"]"
                 let suffix = "\nwindow.__cmuxLibLoaded && window.__cmuxLibLoaded(\(libLiteral)[0]);"
                 webView.evaluateJavaScript(injection + suffix) { [weak self] _, error in
                     if error != nil {
                         Task { @MainActor [weak self] in
                             self?.requestedLibs.remove(lib)
+                            self?.webView?.evaluateJavaScript(
+                                "window.__cmuxLibFailed && window.__cmuxLibFailed(\(libLiteral)[0]);",
+                                completionHandler: nil
+                            )
                         }
                     }
                 }
             }
+        }
+
+        /// JS that appends `css` to the document head as a `<style>` element
+        /// once. The CSS is JSON-encoded so any content splices safely.
+        static func styleInjectionScript(css: String, id: String) -> String {
+            let cssLiteral = (try? JSONSerialization.data(withJSONObject: [css]))
+                .flatMap { String(data: $0, encoding: .utf8) } ?? "[\"\"]"
+            let idLiteral = (try? JSONSerialization.data(withJSONObject: [id]))
+                .flatMap { String(data: $0, encoding: .utf8) } ?? "[\"\"]"
+            return """
+            (function(css, id){
+              if (document.getElementById(id)) { return; }
+              var styleEl = document.createElement('style');
+              styleEl.id = id;
+              styleEl.textContent = css;
+              (document.head || document.documentElement).appendChild(styleEl);
+            })(\(cssLiteral)[0], \(idLiteral)[0]);
+            """
         }
 
         // MARK: WKURLSchemeHandler

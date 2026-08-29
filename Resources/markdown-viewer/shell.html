@@ -149,6 +149,31 @@ body {
   height: auto;
 }
 .cmux-mermaid .cmux-source, .cmux-vega .cmux-source { display: none; }
+/* KaTeX math. cmux-math.js emits these placeholders from a marked
+   extension; the raw delimited LaTeX lives in .cmux-source and stays in
+   the DOM so copy and export can hand it back. The source stays visible
+   (today's appearance) until the lazily loaded library renders into a
+   sibling .cmux-math-render; only then is it hidden. When the library
+   never arrives or rejects an expression, .cmux-math-fallback keeps the
+   source text exactly as it was written. */
+.cmux-math[data-rendered]:not(.cmux-math-fallback) .cmux-source { display: none; }
+.cmux-math-display {
+  display: block;
+  margin: 0.6em 0 0.9em 0;
+  text-align: center;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.15em 0;
+}
+span.cmux-math-display { display: inline-block; width: 100%; }
+.cmux-math-display:not([data-rendered]) .cmux-source,
+.cmux-math-display.cmux-math-fallback .cmux-source {
+  display: block;
+  white-space: pre-wrap;
+  text-align: left;
+}
+.cmux-math .katex { color: inherit; }
+.cmux-math-display .katex-display { margin: 0; }
 .markdown-body code[data-cmux-file] {
   cursor: default;
   border-bottom: 1px dotted var(--fgColor-muted);
@@ -247,6 +272,9 @@ html { scroll-behavior: smooth; }
 </script>
 <script>
 {{viewerNavigationJS}}
+</script>
+<script>
+{{cmuxMathJS}}
 </script>
 <script>
 (function() {
@@ -1138,6 +1166,14 @@ html { scroll-behavior: smooth; }
     }
   });
 
+  // LaTeX math: `$...$`, `\(...\)`, `$$...$$`, `\[...\]`. The tokenizers
+  // live in cmux-math.js and run before marked's escape and emphasis
+  // rules, which would otherwise consume `\(`, `\{`, `_`, and `*`. They
+  // emit placeholders that renderMathBlocks() fills once KaTeX loads.
+  if (window.CmuxMath) {
+    marked.use({ extensions: CmuxMath.markedExtensions() });
+  }
+
   // Lazy-loader: ask Swift to ship a library only when a document
   // actually contains a block that needs it.
   var libState = {};   // name -> 'pending' | 'ready'
@@ -1161,9 +1197,26 @@ html { scroll-behavior: smooth; }
     libQueue[name] = [];
     q.forEach(function(cb) { try { cb(); } catch (e) { /* ignore */ } });
   };
+  // Native calls this when injecting a library failed, so pending blocks
+  // degrade now instead of waiting forever, and the next render may retry.
+  window.__cmuxLibFailed = function(name, msg) {
+    libState[name] = undefined;
+    libQueue[name] = [];
+    renderLibError(name, msg || 'load failed');
+  };
 
+  var libErrorSelectors = {
+    mermaid: '.cmux-mermaid',
+    'vega-lite': '.cmux-vega',
+    katex: '.cmux-math'
+  };
   function renderLibError(libName, msg) {
-    var sel = libName === 'mermaid' ? '.cmux-mermaid' : '.cmux-vega';
+    if (libName === 'katex') {
+      // Math degrades to its source text; an error box would hide content.
+      if (window.CmuxMath) { CmuxMath.fallbackPending(contentEl); }
+      return;
+    }
+    var sel = libErrorSelectors[libName] || '.cmux-vega';
     contentEl.querySelectorAll(sel + ':not([data-rendered])').forEach(function(el) {
       el.setAttribute('data-rendered', '1');
       el.innerHTML = '<div class="cmux-render-error">' + libName + ': ' + escapeHtml(msg) + '</div>';
@@ -1611,12 +1664,42 @@ html { scroll-behavior: smooth; }
     });
   }
 
+  var mathContinuation = null;
+  function renderMathBlocks() {
+    if (!window.CmuxMath) { return; }
+    if (typeof katex === 'undefined') { renderLibError('katex', 'library missing'); return; }
+    var result;
+    try {
+      result = CmuxMath.renderPending(contentEl, katex, document, {
+        budgetMs: window.__cmuxMathRenderBudgetMs
+      });
+    } catch (e) {
+      CmuxMath.fallbackPending(contentEl);
+      return;
+    }
+    // A pass yields after its time budget so the page can paint; finish
+    // the rest on the next turn. One timer at a time.
+    if (result && result.deferred > 0 && mathContinuation === null) {
+      mathContinuation = setTimeout(function() {
+        mathContinuation = null;
+        renderMathBlocks();
+      }, 16);
+    }
+  }
+
   function postProcessSpecialBlocks() {
     if (contentEl.querySelector('.cmux-mermaid:not([data-rendered])')) {
       loadLib('mermaid', renderMermaidBlocks);
     }
     if (contentEl.querySelector('.cmux-vega:not([data-rendered])')) {
       loadLib('vega-lite', renderVegaBlocks);
+    }
+    if (contentEl.querySelector('.cmux-math:not([data-rendered])')) {
+      if (window.CmuxMath) {
+        loadLib('katex', renderMathBlocks);
+      } else {
+        renderLibError('katex', 'cmux-math missing');
+      }
     }
     addCodeCopyButtons();
     markMarkdownFileLinks();
@@ -1838,6 +1921,10 @@ html { scroll-behavior: smooth; }
     clone.querySelectorAll('.cmux-mermaid svg[data-cmux-mermaid-original-max-width]').forEach(function(el) {
       mermaidRestoreOriginalSizing(el);
     });
+    // Exports carry the LaTeX source, not KaTeX's glyph markup.
+    if (window.CmuxMath) {
+      CmuxMath.replaceWithSource(clone, document);
+    }
     clone.querySelectorAll('*').forEach(function(el) {
       Array.prototype.slice.call(el.attributes || []).forEach(function(attr) {
         var name = String(attr.name || '').toLowerCase();
@@ -1896,6 +1983,11 @@ html { scroll-behavior: smooth; }
     darkMql.addListener(window.__cmuxApplyTheme);
   }
   window.__cmuxApplyTheme();
+  // Cmd+C over rendered math puts the LaTeX source on the clipboard.
+  // Selections that touch no formula keep WebKit's default copy.
+  if (window.CmuxMath) {
+    CmuxMath.installCopyHandler(document, contentEl);
+  }
   window.__cmuxPerformViewerNavigationAction = function(action) {
     return CmuxViewerNavigation.performAction(action, markdownScroller());
   };

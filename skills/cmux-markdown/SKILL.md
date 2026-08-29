@@ -33,7 +33,7 @@ The panel renders markdown with rich formatting and auto-updates when the file c
 
 ## Rendering
 
-Headings h1-h6 (dividers on h1/h2), fenced code blocks in monospace, inline code with a highlighted background, tables with alternating row colors, nested ordered and unordered lists, blockquotes with a left border, bold/italic/strikethrough, clickable links, horizontal rules, and inline images. Light and dark mode both supported.
+Headings h1-h6 (dividers on h1/h2), fenced code blocks in monospace, inline code with a highlighted background, tables with alternating row colors, nested ordered and unordered lists, blockquotes with a left border, bold/italic/strikethrough, clickable links, horizontal rules, inline images, and LaTeX math (`$...$`, `\(...\)`, `$$...$$`, `\[...\]`) typeset with KaTeX. Copying rendered math yields the LaTeX source. Light and dark mode both supported.
 
 ## Deep-dive references
 
