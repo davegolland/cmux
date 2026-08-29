@@ -156,6 +156,13 @@ viewer has no runtime CDN dependency.
 - **Copyright:** Copyright (c) Sindre Sorhus
 - **Source:** https://github.com/sindresorhus/github-markdown-css/tree/v5.6.1
 
+### KaTeX
+
+- **Version:** 0.18.4
+- **License:** MIT License
+- **Copyright:** Copyright (c) 2013-2020 Khan Academy and other contributors
+- **Source:** https://github.com/KaTeX/KaTeX/releases/tag/v0.18.4
+
 ### Mermaid
 
 - **Version:** 11.4.1
