@@ -29,6 +29,7 @@ type Shell = {
     __cmuxRenderedText: () => string;
     __cmuxRenderedHTML: () => string;
     __cmuxLibLoaded: (name: string) => void;
+    __cmuxSetMathEnabled: (enabled: boolean) => void;
     katex?: unknown;
   };
   document: Document;
@@ -598,5 +599,48 @@ describe("copy and export return the LaTeX source", () => {
     Object.defineProperty(event, "clipboardData", { value: { setData() {} } });
     paragraph.dispatchEvent(event);
     expect(event.defaultPrevented).toBe(false);
+  });
+});
+
+describe("markdown.renderMath (__cmuxSetMathEnabled)", () => {
+  test("turning math off re-renders the document as source text and back on restores placeholders", () => {
+    const shell = openShell();
+    shell.window.__cmuxRenderMarkdown(ANSWER);
+    expect(content(shell).querySelectorAll(".cmux-math")).toHaveLength(9);
+    const requestsWhileOn = shell.libRequests.length;
+    // Native pushes the global setting after the shell loads (and on every
+    // change); off re-parses the cached source with the tokenizers gated.
+    shell.window.__cmuxSetMathEnabled(false);
+    expect(bootError(shell)).toBeNull();
+    expect(content(shell).querySelectorAll(".cmux-math")).toHaveLength(0);
+    expect(content(shell).textContent).toContain("$\\mathcal{N}(0, 1/m)$");
+    expect(content(shell).textContent).toContain("$$k \\log(n/k) = 10 \\times \\ln(10{,}000) \\approx 92$$");
+    // With the tokenizers gated, marked's own escape rule owns `\(` and `\[`
+    // again (`\(x^2\)` -> `(x^2)`), exactly as the viewer rendered before math.
+    expect(content(shell).textContent).toContain("Also (x^2) and");
+    expect(content(shell).querySelector("p strong")?.textContent).toBe("Gaussian");
+    // No placeholders means no further lazy KaTeX request.
+    expect(shell.libRequests).toHaveLength(requestsWhileOn);
+    // Documents rendered while off stay plain, too.
+    shell.window.__cmuxRenderMarkdown("Only $x^2$ here.");
+    expect(content(shell).querySelectorAll(".cmux-math")).toHaveLength(0);
+    expect(content(shell).querySelector("p")?.textContent).toBe("Only $x^2$ here.");
+    expect(shell.libRequests).toHaveLength(requestsWhileOn);
+    // Back on: the cached source is re-parsed and placeholders return.
+    shell.window.__cmuxSetMathEnabled(true);
+    expect(content(shell).querySelectorAll(".cmux-math-inline")).toHaveLength(1);
+    expect(content(shell).querySelector(".cmux-math .cmux-source")?.textContent).toBe("$x^2$");
+    // Idempotent: the same value never re-renders.
+    const before = content(shell).innerHTML;
+    shell.window.__cmuxSetMathEnabled(true);
+    expect(content(shell).innerHTML).toBe(before);
+  });
+
+  test("setting the flag before any document renders applies to the first render", () => {
+    const shell = openShell();
+    shell.window.__cmuxSetMathEnabled(false);
+    shell.window.__cmuxRenderMarkdown("a $$b$$ c");
+    expect(content(shell).querySelectorAll(".cmux-math")).toHaveLength(0);
+    expect(content(shell).querySelector("p")?.textContent).toBe("a $$b$$ c");
   });
 });

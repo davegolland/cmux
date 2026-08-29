@@ -70,6 +70,12 @@ final class MarkdownPanel: Panel, ObservableObject, FilePreviewTextEditingPanel 
     /// `MarkdownMaxWidthSettings`.
     @Published private(set) var maxContentWidth: Double
 
+    /// Whether the preview typesets LaTeX math with KaTeX. Mirrors the global
+    /// `markdown.renderMath` setting (`MarkdownMathRenderingSettings`); unlike
+    /// the typography values it is not customizable per panel, so every viewer
+    /// follows the setting as soon as it changes.
+    @Published private(set) var mathEnabled: Bool
+
     /// Stable markdown renderer state. Keep this panel-owned so split/tab
     /// layout churn does not recreate the WKWebView and flash existing content.
     let rendererSession = MarkdownRendererSession()
@@ -129,6 +135,7 @@ final class MarkdownPanel: Panel, ObservableObject, FilePreviewTextEditingPanel 
         self.fontSize = MarkdownFontSizeSettings.clamp(fontSize ?? defaultSize)
         self.fontFamily = defaultFamily
         self.maxContentWidth = defaultMaxWidth
+        self.mathEnabled = MarkdownMathRenderingSettings.isEnabled
         self.followedFontSize = defaultSize
         self.followedFontFamily = defaultFamily
         self.followedMaxContentWidth = defaultMaxWidth
@@ -268,8 +275,18 @@ final class MarkdownPanel: Panel, ObservableObject, FilePreviewTextEditingPanel 
         ) { [weak self] _ in
             Task { @MainActor in
                 self?.adoptTypographyDefaultsIfFollowing()
+                self?.adoptMathRenderingDefault()
             }
         }
+    }
+
+    /// Follows the global `markdown.renderMath` setting unconditionally; the
+    /// renderer re-renders the document as source when it turns off.
+    private func adoptMathRenderingDefault() {
+        guard !isClosed else { return }
+        let enabled = MarkdownMathRenderingSettings.isEnabled
+        guard enabled != mathEnabled else { return }
+        mathEnabled = enabled
     }
 
     private func adoptTypographyDefaultsIfFollowing() {

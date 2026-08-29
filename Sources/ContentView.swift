@@ -8008,6 +8008,18 @@ struct ContentView: View {
         )
         contributions.append(
             CommandPaletteCommandContribution(
+                commandId: "palette.terminalToggleMathRendering",
+                title: constant(String(localized: "command.terminalToggleMathRendering.title", defaultValue: "Toggle Math Rendering")),
+                subtitle: terminalPanelSubtitle,
+                keywords: [
+                    "terminal", "math", "latex", "katex", "tex", "formula", "equation",
+                    "render", "typeset", "overlay", "toggle",
+                ],
+                when: { $0.bool(CommandPaletteContextKeys.panelIsTerminal) }
+            )
+        )
+        contributions.append(
+            CommandPaletteCommandContribution(
                 commandId: "palette.terminalSplitRight",
                 title: constant(String(localized: "command.terminalSplitRight.title", defaultValue: "Split Right")),
                 subtitle: constant(String(localized: "command.terminalSplitRight.subtitle", defaultValue: "Terminal Layout")),
@@ -8934,6 +8946,11 @@ struct ContentView: View {
         }
         registry.register(commandId: "palette.terminalClearScreenKeepScrollback") {
             if !tabManager.clearFocusedTerminalKeepingScrollback() {
+                NSSound.beep()
+            }
+        }
+        registry.register(commandId: "palette.terminalToggleMathRendering") {
+            if !tabManager.toggleFocusedTerminalMathRendering() {
                 NSSound.beep()
             }
         }

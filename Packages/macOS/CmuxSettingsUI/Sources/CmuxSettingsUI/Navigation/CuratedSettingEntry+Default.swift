@@ -47,6 +47,7 @@ extension Array where Element == CuratedSettingEntry {
             .init(section: .app, id: "preferred-editor", title: "Open Files With", synonyms: "app.preferredEditor editor open file code vscode visual studio zed sublime subl cursor"),
             .init(section: .app, id: "supported-file-previews", title: "Open Supported Files in cmux", synonyms: "app.openSupportedFilesInCmux cmd click file preview pdf image video audio quicklook quick look editor external"),
             .init(section: .app, id: "markdown-viewer", title: "Open Markdown in cmux Viewer", synonyms: "app.openMarkdownInCmuxViewer md markdown mdx viewer preview readme"),
+            .init(section: .app, id: "markdown-render-math", title: "Markdown Viewer Math", synonyms: "markdown.renderMath latex katex math formula equation typeset tex viewer"),
             .init(section: .app, id: "file-editor-word-wrap", title: "File Editor Word Wrap", synonyms: "fileEditor.wordWrap file editor word wrap soft wrap reflow lines text horizontal scroll preview"),
             .init(section: .app, id: "terminal-config", title: "Terminal Config", synonyms: "ghostty config merged generated preview terminal configuration window open config macos-option-as-alt option as alt left option right option alt key meta"),
             .init(section: .app, id: "global-font-magnification", title: String(localized: "settings.app.globalFontMagnification", defaultValue: "Global Font Magnification"), synonyms: "app.globalFontMagnification global font magnification scale text zoom terminals tabs chrome bigger smaller accessibility"),
@@ -131,6 +132,7 @@ extension Array where Element == CuratedSettingEntry {
                 synonyms: "terminal.scrollSpeed scroll speed multiplier wheel mouse trackpad sensitivity faster slower"
             ),
             .init(section: .terminal, id: "copy-on-select", title: "Copy on Selection", synonyms: "terminal.copyOnSelect copy on selection select clipboard mouse double click triple click iterm"),
+            .init(section: .terminal, id: "render-math", title: "Render Math in Terminal", synonyms: "terminal.renderMath latex katex math formula equation typeset tex overlay claude"),
             .init(section: .terminal, id: "agent-auto-resume", title: "Resume Agent Sessions on Reopen", synonyms: "terminal.autoResumeAgentSessions auto resume restore reopen relaunch quit sessions agents claude code codex opencode rovo dev rovodev toggle"),
             .init(section: .terminal, id: "agent-hibernation", title: "Agent Hibernation", synonyms: "terminal.agentHibernation.enabled idle hibernate suspend background agents claude code codex opencode live terminals"),
             .init(section: .terminal, id: "agent-hibernation-idle", title: "Hibernate After Idle Seconds", synonyms: "terminal.agentHibernation.idleSeconds idle seconds timeout delay hibernate suspend"),

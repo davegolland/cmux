@@ -591,6 +591,12 @@
           "descriptionKey": "schemaDescriptions.terminal.copyOnSelect",
           "description": "When true, copy selected terminal text to the system clipboard when the selection is committed. When false, cmux does not emit a Ghostty copy-on-select override; Ghostty config and defaults control selection-clipboard behavior."
         },
+        "renderMath": {
+          "type": "boolean",
+          "default": true,
+          "descriptionKey": "schemaDescriptions.terminal.renderMath",
+          "description": "When true (the default), LaTeX math printed by terminal programs ($...$, \\(...\\), $$...$$, \\[...\\]) is typeset as an overlay on top of the raw text in every terminal. When false, terminal output stays plain text. Toggle live with the toggleTerminalMathRendering shortcut or the command palette."
+        },
         "autoResumeAgentSessions": {
           "type": "boolean",
           "default": true,
@@ -1532,6 +1538,12 @@
           "default": 980,
           "description": "Default maximum reading column width, in CSS pixels, for newly opened markdown viewers.",
           "descriptionKey": "schemaDescriptions.markdown.maxWidth"
+        },
+        "renderMath": {
+          "type": "boolean",
+          "default": true,
+          "description": "When true (the default), the markdown viewer typesets LaTeX math ($...$, $$...$$, \\(...\\), \\[...\\]) with KaTeX. When false, math is shown as its source text. Applies to open viewers immediately.",
+          "descriptionKey": "schemaDescriptions.markdown.renderMath"
         }
       }
     },
@@ -1691,6 +1703,7 @@
               "attachTextBoxFile",
               "sendCtrlFToTerminal",
               "clearScreenKeepScrollback",
+              "toggleTerminalMathRendering",
               "simulatorHome",
               "simulatorRotateLeft",
               "simulatorRotateRight",

@@ -121,6 +121,7 @@ final class TerminalOutputByteTeeBridge: TerminalByteTeeBinding {
     @MainActor
     func dropSurface(surfaceID: UUID) {
         MobileTerminalByteTee.shared.dropSurface(surfaceID: surfaceID)
+        TerminalMathCandidateRouter.shared.dropSurface(surfaceID: surfaceID)
     }
 }
 

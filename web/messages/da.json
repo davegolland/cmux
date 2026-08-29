@@ -1012,6 +1012,7 @@
           "sessionContentMaxWidth": "Valgfri maksimal bredde i punkter for terminalindhold og den indbyggede agentchat. Angiv false for at bruge hele rudens bredde.",
           "sessionContentAlignment": "Vandret placering af terminalindhold og den indbyggede agentchat, når sessionContentMaxWidth er aktiveret.",
           "copyOnSelect": "Når værdien er true, kopieres markeret terminaltekst til systemets udklipsholder, når markeringen bekræftes. Når værdien er false, udsender cmux ikke en Ghostty copy-on-select-tilsidesættelse; Ghostty-konfiguration og standarder styrer markeringsudklipsholderens adfærd.",
+          "renderMath": "Når true (standard), sættes LaTeX-matematik udskrevet af terminalprogrammer ($...$, \\(...\\), $$...$$, \\[...\\]) som et lag oven på den rå tekst i alle terminaler. Når false, forbliver terminaloutput ren tekst. Skift live med genvejen toggleTerminalMathRendering eller kommandopaletten.",
           "scrollSpeed": "Multiplikator anvendt på rulleværdier fra musehjul og pegefelt i terminalen. Højere værdier ruller hurtigere, lavere værdier langsommere.",
           "showTextBoxOnNewTerminals": "Viser beta-TextBox-input som standard for nyoprettede arbejdsområder, terminalfaner og terminalsplits.",
           "focusTextBoxOnNewTerminals": "Fokuserer beta-TextBox-input som standard for nyoprettede arbejdsområder, terminalfaner og terminalsplits. Fokus viser også TextBox."
@@ -1034,7 +1035,8 @@
         "markdown": {
           "fontSize": "Default body font size, in points, for newly opened markdown viewers. Zoom a viewer live with Cmd-+ / Cmd-- / Cmd-0.",
           "fontFamily": "Default body font family for newly opened markdown viewers. Leave empty for the system markdown font stack.",
-          "maxWidth": "Default maximum reading column width, in CSS pixels, for newly opened markdown viewers."
+          "maxWidth": "Default maximum reading column width, in CSS pixels, for newly opened markdown viewers.",
+          "renderMath": "Når true (standard), sætter Markdown-fremviseren LaTeX-matematik ($...$, $$...$$, \\(...\\), \\[...\\]) med KaTeX. Når false, vises matematik som kildetekst. Gælder straks for åbne fremvisere."
         },
         "sidebar": {
           "notificationMessageLineLimit": "Det maksimale antal linjer, der vises for den seneste notifikation under hver arbejdsområdetitel.",

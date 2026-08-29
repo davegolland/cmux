@@ -1012,6 +1012,7 @@
           "sessionContentMaxWidth": "Optionale maximale Breite in Punkten für Terminalinhalte und den integrierten Agentenchat. Mit false wird die gesamte Breite des Bereichs verwendet.",
           "sessionContentAlignment": "Horizontale Position von Terminalinhalten und integriertem Agentenchat, wenn sessionContentMaxWidth aktiviert ist.",
           "copyOnSelect": "Bei true wird ausgewählter Terminaltext in die Systemzwischenablage kopiert, sobald die Auswahl bestätigt wird. Bei false gibt cmux keine Ghostty-copy-on-select-Überschreibung aus; Ghostty-Konfiguration und Standardwerte steuern das Verhalten der Auswahlzwischenablage.",
+          "renderMath": "Wenn true (Standard), wird von Terminalprogrammen ausgegebene LaTeX-Mathematik ($...$, \\(...\\), $$...$$, \\[...\\]) in jedem Terminal als Overlay über dem Rohtext gesetzt. Wenn false, bleibt die Terminalausgabe reiner Text. Live umschalten mit dem Kurzbefehl toggleTerminalMathRendering oder der Befehlspalette.",
           "scrollSpeed": "Multiplikator für die Scroll-Werte von Mausrad und Trackpad im Terminal. Höhere Werte scrollen schneller, niedrigere Werte langsamer.",
           "showTextBoxOnNewTerminals": "Zeigt die Beta-TextBox-Eingabe standardmaessig fuer neu erstellte Workspaces, Terminal-Tabs und Terminal-Splits an.",
           "focusTextBoxOnNewTerminals": "Fokussiert die Beta-TextBox-Eingabe standardmaessig fuer neu erstellte Workspaces, Terminal-Tabs und Terminal-Splits. Fokussieren zeigt die TextBox ebenfalls an."
@@ -1034,7 +1035,8 @@
         "markdown": {
           "fontSize": "Default body font size, in points, for newly opened markdown viewers. Zoom a viewer live with Cmd-+ / Cmd-- / Cmd-0.",
           "fontFamily": "Default body font family for newly opened markdown viewers. Leave empty for the system markdown font stack.",
-          "maxWidth": "Default maximum reading column width, in CSS pixels, for newly opened markdown viewers."
+          "maxWidth": "Default maximum reading column width, in CSS pixels, for newly opened markdown viewers.",
+          "renderMath": "Wenn true (Standard), setzt der Markdown-Viewer LaTeX-Mathematik ($...$, $$...$$, \\(...\\), \\[...\\]) mit KaTeX. Wenn false, wird Mathematik als Quelltext angezeigt. Gilt sofort für offene Viewer."
         },
         "sidebar": {
           "notificationMessageLineLimit": "Maximale Anzahl der Zeilen, die für die neueste Benachrichtigung unter jedem Workspace-Titel angezeigt werden.",

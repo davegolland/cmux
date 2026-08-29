@@ -61,6 +61,7 @@ Values for `shortcuts.bindings.<action>`:
 - `shortcuts.bindings.newSurface`
 - `shortcuts.bindings.toggleTerminalCopyMode`
 - `shortcuts.bindings.clearScreenKeepScrollback`
+- `shortcuts.bindings.toggleTerminalMathRendering`
 - `shortcuts.bindings.simulatorHome`
 - `shortcuts.bindings.simulatorRotateLeft`
 - `shortcuts.bindings.simulatorRotateRight`

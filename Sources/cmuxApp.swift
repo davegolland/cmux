@@ -536,6 +536,15 @@ struct cmuxApp: App {
                     appDelegate.openDebugScrollbackTab(nil)
                 }
 
+                Button(
+                    String(
+                        localized: "debug.menu.dumpTerminalMathPlacements",
+                        defaultValue: "Dump Terminal Math Placements"
+                    )
+                ) {
+                    appDelegate.debugDumpTerminalMathPlacements(nil)
+                }
+
                 IrohAndAgentSessionDebugMenuButtons(
                     openReact: { appDelegate.openDebugAgentSessionReact(nil) },
                     openSolid: { appDelegate.openDebugAgentSessionSolid(nil) }

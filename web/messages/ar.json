@@ -1012,6 +1012,7 @@
           "sessionContentMaxWidth": "حد أقصى اختياري للعرض، بالنقاط، لمحتوى الطرفية ودردشة الوكيل المضمنة. عيّن false لاستخدام عرض الجزء بالكامل.",
           "sessionContentAlignment": "الموضع الأفقي لمحتوى الطرفية ودردشة الوكيل المضمنة عند تفعيل sessionContentMaxWidth.",
           "copyOnSelect": "عند true، ينسخ النص المحدد في الطرفية إلى حافظة النظام عند تثبيت التحديد. عند false، لا يصدر cmux تجاوز Ghostty copy-on-select؛ وتتحكم إعدادات Ghostty وقيمه الافتراضية في سلوك حافظة التحديد.",
+          "renderMath": "عند true (الافتراضي)، يتم تنضيد صيغ LaTeX الرياضية التي تطبعها برامج الطرفية ($...$، \\(...\\)، $$...$$، \\[...\\]) كطبقة فوق النص الخام في كل طرفية. عند false، يبقى إخراج الطرفية نصًا عاديًا. بدّل مباشرة عبر اختصار toggleTerminalMathRendering أو لوحة الأوامر.",
           "scrollSpeed": "مُضاعِف يُطبَّق على مقدار التمرير بعجلة الفأرة ولوحة اللمس في الطرفية. القيم الأعلى تُمرِّر أسرع، والقيم الأدنى تُمرِّر أبطأ.",
           "showTextBoxOnNewTerminals": "يعرض إدخال TextBox التجريبي افتراضيًا لمساحات العمل وتبويبات الطرفية وتقسيماتها المنشأة حديثًا.",
           "focusTextBoxOnNewTerminals": "يركز إدخال TextBox التجريبي افتراضيًا لمساحات العمل وتبويبات الطرفية وتقسيماتها المنشأة حديثًا. التركيز يعرض TextBox أيضًا."
@@ -1034,7 +1035,8 @@
         "markdown": {
           "fontSize": "Default body font size, in points, for newly opened markdown viewers. Zoom a viewer live with Cmd-+ / Cmd-- / Cmd-0.",
           "fontFamily": "Default body font family for newly opened markdown viewers. Leave empty for the system markdown font stack.",
-          "maxWidth": "Default maximum reading column width, in CSS pixels, for newly opened markdown viewers."
+          "maxWidth": "Default maximum reading column width, in CSS pixels, for newly opened markdown viewers.",
+          "renderMath": "عند true (الافتراضي)، يعرض عارض Markdown صيغ LaTeX الرياضية ($...$، $$...$$، \\(...\\)، \\[...\\]) باستخدام KaTeX. عند false، تُعرض الصيغ كنص مصدر. يُطبق فورًا على العارضات المفتوحة."
         },
         "sidebar": {
           "notificationMessageLineLimit": "الحد الأقصى لعدد الأسطر المعروضة لأحدث إشعار أسفل عنوان كل مساحة عمل.",

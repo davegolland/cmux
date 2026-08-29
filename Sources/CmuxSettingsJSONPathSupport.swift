@@ -236,6 +236,11 @@ enum TerminalSettingsFileMapping {
             defaultsKey: AgentSessionAutoResumeSettings.autoResumeAgentSessionsKey,
             invalidPath: "terminal.autoResumeAgentSessions"
         ),
+        .init(
+            jsonKey: "renderMath",
+            defaultsKey: terminal.renderMath.userDefaultsKey,
+            invalidPath: terminal.renderMath.id
+        ),
     ]
 }
 
@@ -431,6 +436,7 @@ extension CmuxSettingsFileStore {
         "terminal.scrollSpeed",
         "terminal.copyOnSelect",
         "terminal.autoResumeAgentSessions",
+        "terminal.renderMath",
         "terminal.showTextBoxOnNewTerminals",
         "terminal.focusTextBoxOnNewTerminals",
         "terminal.textBoxDefaultSubmitAction",
@@ -532,6 +538,7 @@ extension CmuxSettingsFileStore {
         "markdown.fontSize",
         "markdown.fontFamily",
         "markdown.maxWidth",
+        "markdown.renderMath",
         "canvas.paneGap",
         "canvas.snappingEnabled",
         "fileEditor.wordWrap",

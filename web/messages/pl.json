@@ -1013,6 +1013,7 @@
           "sessionContentMaxWidth": "Opcjonalna maksymalna szerokość w punktach dla zawartości terminala i wbudowanego czatu agenta. Ustaw false, aby użyć pełnej szerokości panelu.",
           "sessionContentAlignment": "Poziome położenie zawartości terminala i wbudowanego czatu agenta po włączeniu sessionContentMaxWidth.",
           "copyOnSelect": "Gdy wartość to true, zaznaczony tekst terminala jest kopiowany do schowka systemowego po zatwierdzeniu zaznaczenia. Gdy wartość to false, cmux nie emituje nadpisania Ghostty copy-on-select; konfiguracja i wartości domyślne Ghostty sterują zachowaniem schowka zaznaczenia.",
+          "renderMath": "Gdy true (domyślnie), wzory LaTeX wypisywane przez programy terminala ($...$, \\(...\\), $$...$$, \\[...\\]) są składane jako nakładka na surowym tekście w każdym terminalu. Gdy false, wyjście terminala pozostaje zwykłym tekstem. Przełączaj na żywo skrótem toggleTerminalMathRendering lub paletą poleceń.",
           "scrollSpeed": "Mnożnik stosowany do przewijania kółkiem myszy i gładzikiem w terminalu. Wyższe wartości przewijają szybciej, niższe wolniej.",
           "showTextBoxOnNewTerminals": "Domyślnie pokazuje wejście TextBox beta dla nowo utworzonych obszarów roboczych, kart terminala i podziałów.",
           "focusTextBoxOnNewTerminals": "Domyślnie ustawia fokus na wejściu TextBox beta dla nowo utworzonych obszarów roboczych, kart terminala i podziałów. Fokus pokazuje też TextBox."
@@ -1035,7 +1036,8 @@
         "markdown": {
           "fontSize": "Default body font size, in points, for newly opened markdown viewers. Zoom a viewer live with Cmd-+ / Cmd-- / Cmd-0.",
           "fontFamily": "Default body font family for newly opened markdown viewers. Leave empty for the system markdown font stack.",
-          "maxWidth": "Default maximum reading column width, in CSS pixels, for newly opened markdown viewers."
+          "maxWidth": "Default maximum reading column width, in CSS pixels, for newly opened markdown viewers.",
+          "renderMath": "Gdy true (domyślnie), przeglądarka Markdown składa wzory LaTeX ($...$, $$...$$, \\(...\\), \\[...\\]) za pomocą KaTeX. Gdy false, wzory są wyświetlane jako tekst źródłowy. Dotyczy natychmiast otwartych przeglądarek."
         },
         "sidebar": {
           "notificationMessageLineLimit": "Maksymalna liczba wierszy wyświetlanych dla najnowszego powiadomienia pod tytułem każdego obszaru roboczego.",

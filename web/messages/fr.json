@@ -1012,6 +1012,7 @@
           "sessionContentMaxWidth": "Largeur maximale facultative, en points, pour le contenu du terminal et du chat d’agent intégré. Définissez false pour utiliser toute la largeur du volet.",
           "sessionContentAlignment": "Position horizontale du contenu du terminal et du chat d’agent intégré lorsque sessionContentMaxWidth est activé.",
           "copyOnSelect": "Lorsque la valeur est true, le texte sélectionné dans le terminal est copié dans le presse-papiers système quand la sélection est validée. Lorsque la valeur est false, cmux n’émet pas de remplacement Ghostty copy-on-select; la configuration et les valeurs par défaut de Ghostty contrôlent le comportement du presse-papiers de sélection.",
+          "renderMath": "Si true (par défaut), les formules LaTeX affichées par les programmes du terminal ($...$, \\(...\\), $$...$$, \\[...\\]) sont composées en surimpression au-dessus du texte brut dans chaque terminal. Si false, la sortie du terminal reste en texte brut. Basculez en direct avec le raccourci toggleTerminalMathRendering ou la palette de commandes.",
           "scrollSpeed": "Multiplicateur appliqué aux déplacements de la molette de défilement et du pavé tactile dans le terminal. Les valeurs plus élevées font défiler plus vite, les plus basses plus lentement.",
           "showTextBoxOnNewTerminals": "Affiche l'entrée TextBox bêta par défaut pour les espaces de travail, onglets et divisions de terminal nouvellement créés.",
           "focusTextBoxOnNewTerminals": "Place le focus sur l'entrée TextBox bêta par défaut pour les espaces de travail, onglets et divisions de terminal nouvellement créés. Le focus affiche aussi TextBox."
@@ -1034,7 +1035,8 @@
         "markdown": {
           "fontSize": "Default body font size, in points, for newly opened markdown viewers. Zoom a viewer live with Cmd-+ / Cmd-- / Cmd-0.",
           "fontFamily": "Default body font family for newly opened markdown viewers. Leave empty for the system markdown font stack.",
-          "maxWidth": "Default maximum reading column width, in CSS pixels, for newly opened markdown viewers."
+          "maxWidth": "Default maximum reading column width, in CSS pixels, for newly opened markdown viewers.",
+          "renderMath": "Si true (par défaut), la visionneuse Markdown compose les formules LaTeX ($...$, $$...$$, \\(...\\), \\[...\\]) avec KaTeX. Si false, les formules sont affichées en texte source. S'applique immédiatement aux visionneuses ouvertes."
         },
         "sidebar": {
           "notificationMessageLineLimit": "Nombre maximal de lignes affichées pour la notification la plus récente sous le titre de chaque espace de travail.",

@@ -38,6 +38,14 @@ public struct MarkdownCatalogSection: SettingCatalogSection {
         userDefaultsKey: "markdown.maxWidth"
     )
 
+    /// Whether the markdown viewer typesets LaTeX math with KaTeX. When off,
+    /// math delimiters stay as plain source text.
+    public let renderMath = DefaultsKey<Bool>(
+        id: "markdown.renderMath",
+        defaultValue: true,
+        userDefaultsKey: "markdown.renderMath"
+    )
+
     /// Creates the markdown settings section with its default keys.
     public init() {}
 }

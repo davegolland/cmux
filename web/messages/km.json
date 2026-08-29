@@ -1012,6 +1012,7 @@
           "sessionContentMaxWidth": "ទទឹងអតិបរមាជាជម្រើស គិតជាពិន្ទុ សម្រាប់ខ្លឹមសារស្ថានីយ និងការជជែកជាមួយភ្នាក់ងារដែលភ្ជាប់មកជាមួយ។ កំណត់ false ដើម្បីប្រើទទឹងផ្ទាំងទាំងមូល។",
           "sessionContentAlignment": "ទីតាំងផ្ដេកនៃខ្លឹមសារស្ថានីយ និងការជជែកជាមួយភ្នាក់ងារដែលភ្ជាប់មកជាមួយ នៅពេលបើក sessionContentMaxWidth។",
           "copyOnSelect": "នៅពេល true អត្ថបទ terminal ដែលបានជ្រើសនឹងត្រូវចម្លងទៅ clipboard របស់ប្រព័ន្ធ ពេលការជ្រើសត្រូវបានបញ្ជាក់។ នៅពេល false cmux មិនបញ្ចេញការកំណត់ជាន់លើ Ghostty copy-on-select ទេ; ការកំណត់ និងលំនាំដើមរបស់ Ghostty គ្រប់គ្រងអាកប្បកិរិយា clipboard សម្រាប់ការជ្រើស។",
+          "renderMath": "នៅពេល true (លំនាំដើម) រូបមន្ត LaTeX ដែលកម្មវិធីស្ថានីយបោះពុម្ព ($...$, \\(...\\), $$...$$, \\[...\\]) ត្រូវបានរៀបចំជាស្រទាប់ពីលើអត្ថបទដើមក្នុងគ្រប់ស្ថានីយ។ នៅពេល false លទ្ធផលស្ថានីយនៅតែជាអត្ថបទធម្មតា។ ប្ដូរភ្លាមៗដោយផ្លូវកាត់ toggleTerminalMathRendering ឬបន្ទះពាក្យបញ្ជា។",
           "scrollSpeed": "មេគុណដែលអនុវត្តចំពោះចលនារមូររបស់កង់រមូរ និងផ្ទាំងប៉ះក្នុង terminal។ តម្លៃកាន់តែខ្ពស់ រមូរកាន់តែលឿន ហើយតម្លៃកាន់តែទាប រមូរកាន់តែយឺត។",
           "showTextBoxOnNewTerminals": "បង្ហាញការបញ្ចូល TextBox បេតាជាលំនាំដើមសម្រាប់ workspace ផ្ទាំងស្ថានីយ និងស្ប្លីតស្ថានីយដែលទើបបង្កើតថ្មី។",
           "focusTextBoxOnNewTerminals": "ផ្តោតការបញ្ចូល TextBox បេតាជាលំនាំដើមសម្រាប់ workspace ផ្ទាំងស្ថានីយ និងស្ប្លីតស្ថានីយដែលទើបបង្កើតថ្មី។ ការផ្តោតក៏បង្ហាញ TextBox ផងដែរ។"
@@ -1034,7 +1035,8 @@
         "markdown": {
           "fontSize": "Default body font size, in points, for newly opened markdown viewers. Zoom a viewer live with Cmd-+ / Cmd-- / Cmd-0.",
           "fontFamily": "Default body font family for newly opened markdown viewers. Leave empty for the system markdown font stack.",
-          "maxWidth": "Default maximum reading column width, in CSS pixels, for newly opened markdown viewers."
+          "maxWidth": "Default maximum reading column width, in CSS pixels, for newly opened markdown viewers.",
+          "renderMath": "នៅពេល true (លំនាំដើម) កម្មវិធីមើល Markdown រៀបចំរូបមន្ត LaTeX ($...$, $$...$$, \\(...\\), \\[...\\]) ដោយ KaTeX។ នៅពេល false រូបមន្តត្រូវបានបង្ហាញជាអត្ថបទប្រភព។ អនុវត្តភ្លាមៗចំពោះកម្មវិធីមើលដែលបើក។"
         },
         "sidebar": {
           "notificationMessageLineLimit": "ចំនួនបន្ទាត់អតិបរមាដែលបង្ហាញសម្រាប់ការជូនដំណឹងចុងក្រោយនៅខាងក្រោមចំណងជើងកន្លែងធ្វើការនីមួយៗ។",

@@ -23,6 +23,7 @@ public struct TerminalSection: View {
     @State private var sessionContentAlignment: DefaultsValueModel<SessionContentAlignment>
     @State private var scrollBar: DefaultsValueModel<Bool>
     @State private var copyOnSelect: DefaultsValueModel<Bool>
+    @State private var renderMath: DefaultsValueModel<Bool>
     @State private var adaptiveDefaultTheme: DefaultsValueModel<Bool>
     @State private var autoResume: DefaultsValueModel<Bool>
     @State private var hibernation: DefaultsValueModel<Bool>
@@ -50,6 +51,7 @@ public struct TerminalSection: View {
         _sessionContentAlignment = State(initialValue: DefaultsValueModel(store: defaultsStore, key: catalog.terminal.sessionContentAlignment))
         _scrollBar = State(initialValue: DefaultsValueModel(store: defaultsStore, key: catalog.terminal.showScrollBar))
         _copyOnSelect = State(initialValue: DefaultsValueModel(store: defaultsStore, key: catalog.terminal.copyOnSelect))
+        _renderMath = State(initialValue: DefaultsValueModel(store: defaultsStore, key: catalog.terminal.renderMath))
         _adaptiveDefaultTheme = State(
             initialValue: DefaultsValueModel(
                 store: defaultsStore,
@@ -84,6 +86,7 @@ public struct TerminalSection: View {
             sessionContentAlignment,
             scrollBar,
             copyOnSelect,
+            renderMath,
             adaptiveDefaultTheme,
             autoResume,
             hibernation,
@@ -408,6 +411,19 @@ public struct TerminalSection: View {
                     .labelsHidden()
                     .controlSize(.small)
                     .accessibilityIdentifier("SettingsTerminalCopyOnSelectToggle")
+            }
+            SettingsCardDivider()
+            SettingsCardRow(
+                configurationReview: .json("terminal.renderMath"),
+                String(localized: "settings.terminal.renderMath", defaultValue: "Render Math in Terminal"),
+                subtitle: renderMath.current
+                    ? String(localized: "settings.terminal.renderMath.subtitleOn", defaultValue: "LaTeX math printed by terminal programs ($...$, \\(...\\), $$...$$, \\[...\\]) is typeset over the raw text. Applies to every terminal.")
+                    : String(localized: "settings.terminal.renderMath.subtitleOff", defaultValue: "Terminal output is shown as plain text; math delimiters are left as typed.")
+            ) {
+                Toggle("", isOn: Binding(get: { renderMath.current }, set: { renderMath.set($0) }))
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .accessibilityIdentifier("SettingsTerminalRenderMathToggle")
             }
             SettingsCardDivider()
             SettingsCardRow(

@@ -97,6 +97,7 @@ extension CmuxSettingsFileStore {
                     "sessionContentAlignment": SessionContentAlignment.center.rawValue,
                     "copyOnSelect": TerminalCopyOnSelectSettings.defaultCopyOnSelect,
                     "autoResumeAgentSessions": AgentSessionAutoResumeSettings.defaultAutoResumeAgentSessions,
+                    "renderMath": SettingCatalog().terminal.renderMath.defaultValue,
                     "showTextBoxOnNewTerminals": TerminalTextBoxInputSettings.defaultShowOnNewTerminals,
                     "focusTextBoxOnNewTerminals": TerminalTextBoxInputSettings.defaultFocusOnNewTerminals,
                     "textBoxDefaultSubmitAction": TerminalTextBoxInputSettings.defaultSubmitActionID,
@@ -228,6 +229,7 @@ extension CmuxSettingsFileStore {
                     "fontSize": Int(MarkdownFontSizeSettings.defaultPointSize),
                     "fontFamily": "",
                     "maxWidth": Int(MarkdownMaxWidthSettings.defaultCSSPixels),
+                    "renderMath": SettingCatalog().markdown.renderMath.defaultValue,
                 ],
             ],
             [

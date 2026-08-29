@@ -28,7 +28,7 @@ extension ShortcutAction {
              .toggleFocusedWorkspaceGroupCollapsed, .reopenClosedBrowserPanel,
              .newSurface, .toggleTerminalCopyMode, .focusTextBoxInput,
              .cycleTextBoxSubmitAction, .attachTextBoxFile, .sendCtrlFToTerminal,
-             .clearScreenKeepScrollback:
+             .clearScreenKeepScrollback, .toggleTerminalMathRendering:
             return .navigation
         case .focusLeft, .focusRight, .focusUp, .focusDown,
              .focusPreviousPane, .focusNextPane, .splitRight, .splitDown,

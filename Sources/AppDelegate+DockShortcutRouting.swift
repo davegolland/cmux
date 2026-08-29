@@ -49,6 +49,7 @@ extension KeyboardShortcutSettings.Action {
              .browserReload, .browserHardReload,
              .browserZoomIn, .browserZoomOut, .browserZoomReset,
              .markdownZoomIn, .markdownZoomOut, .markdownZoomReset,
+             .toggleTerminalMathRendering,
              .toggleBrowserDeveloperTools,
              .showBrowserJavaScriptConsole,
              .toggleBrowserFocusMode,

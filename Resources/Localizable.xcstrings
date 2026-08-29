@@ -74964,6 +74964,23 @@
         }
       }
     },
+    "command.terminalToggleMathRendering.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Toggle Math Rendering"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "数式レンダリングを切り替え"
+          }
+        }
+      }
+    },
     "command.terminalToggleTextBoxInput.title": {
       "extractionState": "manual",
       "localizations": {
@@ -87684,6 +87701,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "Дисплей вікна розробки…"
+          }
+        }
+      }
+    },
+    "debug.menu.dumpTerminalMathPlacements": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dump Terminal Math Placements"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ターミナル数式の配置をダンプ"
           }
         }
       }
@@ -162675,6 +162709,40 @@
         }
       }
     },
+    "settings.app.markdownRenderMath": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Markdown Viewer Math"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Markdown ビューアの数式"
+          }
+        }
+      }
+    },
+    "settings.app.markdownRenderMath.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Typeset LaTeX math ($...$, $$...$$, \\(...\\), \\[...\\]) with KaTeX in the markdown viewer. When off, math is shown as source text."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Markdown ビューアで LaTeX 数式（$...$、$$...$$、\\(...\\)、\\[...\\]）を KaTeX で組版表示します。オフにすると数式はソーステキストのまま表示されます。"
+          }
+        }
+      }
+    },
     "settings.app.menuBarOnly": {
       "extractionState": "manual",
       "localizations": {
@@ -194622,6 +194690,23 @@
         }
       }
     },
+    "settings.search.alias.setting.app.markdown-render-math": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "markdown.renderMath latex katex math formula equation typeset tex viewer"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "markdown.renderMath latex katex 数式 数学 公式 方程式 組版 tex Markdown ビューア"
+          }
+        }
+      }
+    },
     "settings.search.alias.setting.app.markdown-viewer": {
       "extractionState": "manual",
       "localizations": {
@@ -203420,6 +203505,23 @@
         }
       }
     },
+    "settings.search.alias.setting.terminal.render-math": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "terminal.renderMath latex katex math formula equation typeset tex overlay"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "terminal.renderMath latex katex 数式 数学 公式 方程式 組版 tex オーバーレイ ターミナル"
+          }
+        }
+      }
+    },
     "settings.search.alias.setting.terminal.resume-commands": {
       "extractionState": "manual",
       "localizations": {
@@ -209640,6 +209742,57 @@
           "stringUnit": {
             "state": "translated",
             "value": "ペインのプロセスツリーの合計メモリがこのギガバイト数を超えるとフラグが立てられます。"
+          }
+        }
+      }
+    },
+    "settings.terminal.renderMath": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Render Math in Terminal"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ターミナルで数式を描画"
+          }
+        }
+      }
+    },
+    "settings.terminal.renderMath.subtitleOff": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Terminal output is shown as plain text; math delimiters are left as typed."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ターミナル出力はプレーンテキストのまま表示され、数式の区切り文字は入力どおりに残ります。"
+          }
+        }
+      }
+    },
+    "settings.terminal.renderMath.subtitleOn": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "LaTeX math printed by terminal programs ($...$, \\(...\\), $$...$$, \\[...\\]) is typeset over the raw text. Applies to every terminal."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ターミナルプログラムが出力した LaTeX 数式（$...$、\\(...\\)、$$...$$、\\[...\\]）を元のテキストの上に組版表示します。すべてのターミナルに適用されます。"
           }
         }
       }
@@ -224836,6 +224989,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "切換終端機複製模式"
+          }
+        }
+      }
+    },
+    "shortcut.toggleTerminalMathRendering.label": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Toggle Math Rendering"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "数式レンダリングを切り替え"
           }
         }
       }

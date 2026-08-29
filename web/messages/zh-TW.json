@@ -1012,6 +1012,7 @@
           "sessionContentMaxWidth": "終端機與內建代理程式聊天內容的選用最大寬度，單位為點。設為 false 可使用整個窗格寬度。",
           "sessionContentAlignment": "啟用 sessionContentMaxWidth 時，終端機與內建代理程式聊天內容的水平位置。",
           "copyOnSelect": "為 true 時，選取確認後會將所選終端機文字複製到系統剪貼簿。為 false 時，cmux 不會輸出 Ghostty copy-on-select 覆寫；選取剪貼簿行為由 Ghostty 設定與預設值控制。",
+          "renderMath": "為 true（預設）時，終端機程式輸出的 LaTeX 公式（$...$、\\(...\\)、$$...$$、\\[...\\]）會在所有終端機中以疊加層的形式排版在原始文字之上。為 false 時，終端機輸出保持為純文字。可透過 toggleTerminalMathRendering 快速鍵或命令面板即時切換。",
           "scrollSpeed": "套用於終端機滾輪與觸控板捲動量的倍率。數值越大捲動越快，數值越小捲動越慢。",
           "showTextBoxOnNewTerminals": "預設在新建的工作區、終端機分頁和終端機分割中顯示測試版 TextBox 輸入。",
           "focusTextBoxOnNewTerminals": "預設在新建的工作區、終端機分頁和終端機分割中聚焦測試版 TextBox 輸入。聚焦也會顯示 TextBox。"
@@ -1034,7 +1035,8 @@
         "markdown": {
           "fontSize": "Default body font size, in points, for newly opened markdown viewers. Zoom a viewer live with Cmd-+ / Cmd-- / Cmd-0.",
           "fontFamily": "Default body font family for newly opened markdown viewers. Leave empty for the system markdown font stack.",
-          "maxWidth": "Default maximum reading column width, in CSS pixels, for newly opened markdown viewers."
+          "maxWidth": "Default maximum reading column width, in CSS pixels, for newly opened markdown viewers.",
+          "renderMath": "為 true（預設）時，Markdown 檢視器使用 KaTeX 排版 LaTeX 公式（$...$、$$...$$、\\(...\\)、\\[...\\]）。為 false 時，公式顯示為原始文字。對已開啟的檢視器立即生效。"
         },
         "sidebar": {
           "notificationMessageLineLimit": "每個工作區標題下方顯示的最新通知最大行數。",

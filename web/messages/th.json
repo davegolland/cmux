@@ -1013,6 +1013,7 @@
           "sessionContentMaxWidth": "ความกว้างสูงสุดแบบไม่บังคับในหน่วยพอยต์สำหรับเนื้อหาเทอร์มินัลและแชตเอเจนต์ในตัว ตั้งค่าเป็น false เพื่อใช้ความกว้างเต็มพาเนล",
           "sessionContentAlignment": "ตำแหน่งแนวนอนของเนื้อหาเทอร์มินัลและแชตเอเจนต์ในตัวเมื่อเปิดใช้ sessionContentMaxWidth",
           "copyOnSelect": "เมื่อเป็น true ข้อความเทอร์มินัลที่เลือกจะถูกคัดลอกไปยังคลิปบอร์ดของระบบเมื่อยืนยันการเลือก เมื่อเป็น false cmux จะไม่ส่งค่าแทนที่ Ghostty copy-on-select; การกำหนดค่าและค่าเริ่มต้นของ Ghostty จะควบคุมพฤติกรรมของคลิปบอร์ดการเลือก",
+          "renderMath": "เมื่อเป็น true (ค่าเริ่มต้น) สูตร LaTeX ที่โปรแกรมเทอร์มินัลพิมพ์ออกมา ($...$, \\(...\\), $$...$$, \\[...\\]) จะถูกจัดเรียงเป็นชั้นซ้อนทับข้อความดิบในทุกเทอร์มินัล เมื่อเป็น false ผลลัพธ์ของเทอร์มินัลจะยังเป็นข้อความธรรมดา สลับได้ทันทีด้วยทางลัด toggleTerminalMathRendering หรือพาเลตคำสั่ง",
           "scrollSpeed": "ตัวคูณที่ใช้กับระยะการเลื่อนของล้อเลื่อนเมาส์และแทร็กแพดในเทอร์มินัล ค่ายิ่งสูงยิ่งเลื่อนเร็ว ค่ายิ่งต่ำยิ่งเลื่อนช้า",
           "showTextBoxOnNewTerminals": "แสดงอินพุต TextBox รุ่นเบต้าเป็นค่าเริ่มต้นสำหรับเวิร์กสเปซ แท็บเทอร์มินัล และการแบ่งเทอร์มินัลที่สร้างใหม่",
           "focusTextBoxOnNewTerminals": "โฟกัสอินพุต TextBox รุ่นเบต้าเป็นค่าเริ่มต้นสำหรับเวิร์กสเปซ แท็บเทอร์มินัล และการแบ่งเทอร์มินัลที่สร้างใหม่ การโฟกัสจะแสดง TextBox ด้วย"
@@ -1035,7 +1036,8 @@
         "markdown": {
           "fontSize": "Default body font size, in points, for newly opened markdown viewers. Zoom a viewer live with Cmd-+ / Cmd-- / Cmd-0.",
           "fontFamily": "Default body font family for newly opened markdown viewers. Leave empty for the system markdown font stack.",
-          "maxWidth": "Default maximum reading column width, in CSS pixels, for newly opened markdown viewers."
+          "maxWidth": "Default maximum reading column width, in CSS pixels, for newly opened markdown viewers.",
+          "renderMath": "เมื่อเป็น true (ค่าเริ่มต้น) ตัวแสดง Markdown จะจัดเรียงสูตร LaTeX ($...$, $$...$$, \\(...\\), \\[...\\]) ด้วย KaTeX เมื่อเป็น false สูตรจะแสดงเป็นข้อความต้นฉบับ มีผลทันทีกับตัวแสดงที่เปิดอยู่"
         },
         "sidebar": {
           "notificationMessageLineLimit": "จำนวนบรรทัดสูงสุดที่แสดงสำหรับการแจ้งเตือนล่าสุดใต้ชื่อของแต่ละพื้นที่ทำงาน",

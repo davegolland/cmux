@@ -1170,9 +1170,37 @@ html { scroll-behavior: smooth; }
   // live in cmux-math.js and run before marked's escape and emphasis
   // rules, which would otherwise consume `\(`, `\{`, `_`, and `*`. They
   // emit placeholders that renderMathBlocks() fills once KaTeX loads.
+  // `markdown.renderMath`: native flips this through __cmuxSetMathEnabled.
+  // The extensions are registered once, so they are gated here rather than
+  // unregistered; when off, the tokenizers never fire and `$...$` stays text.
+  var mathRenderingEnabled = true;
+  var lastMarkdownSource = null;
   if (window.CmuxMath) {
-    marked.use({ extensions: CmuxMath.markedExtensions() });
+    marked.use({ extensions: CmuxMath.markedExtensions().map(function(ext) {
+      return {
+        name: ext.name,
+        level: ext.level,
+        start: function(src) {
+          return mathRenderingEnabled ? ext.start.apply(this, arguments) : undefined;
+        },
+        tokenizer: function(src) {
+          return mathRenderingEnabled ? ext.tokenizer.apply(this, arguments) : undefined;
+        },
+        renderer: ext.renderer
+      };
+    }) });
   }
+  window.__cmuxSetMathEnabled = function(enabled) {
+    var next = !!enabled;
+    if (next === mathRenderingEnabled) { return; }
+    mathRenderingEnabled = next;
+    // Placeholders are produced at parse time, so a flip re-parses the
+    // cached source: off replaces every formula with its text, on brings
+    // the placeholders back and lazily loads KaTeX as usual.
+    if (lastMarkdownSource !== null && window.__cmuxRenderMarkdown) {
+      window.__cmuxRenderMarkdown(lastMarkdownSource);
+    }
+  };
 
   // Lazy-loader: ask Swift to ship a library only when a document
   // actually contains a block that needs it.
@@ -1859,6 +1887,7 @@ html { scroll-behavior: smooth; }
   }, true);
 
   window.__cmuxRenderMarkdown = function(md) {
+    lastMarkdownSource = md || '';
     try {
       headingSlugCounts = Object.create(null);
       var documentParts = extractFrontmatter(md || '');

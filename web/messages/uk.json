@@ -996,6 +996,7 @@
           "sessionContentMaxWidth": "Необов’язкова максимальна ширина в пунктах для вмісту термінала та вбудованого чату агента. Значення false використовує всю ширину панелі.",
           "sessionContentAlignment": "Горизонтальне розташування вмісту термінала та вбудованого чату агента, коли ввімкнено sessionContentMaxWidth.",
           "copyOnSelect": "Якщо значення true, вибраний текст термінала копіюється до системного буфера обміну після підтвердження виділення. Якщо значення false, cmux не виводить перевизначення Ghostty copy-on-select; конфігурація та стандартні значення Ghostty керують поведінкою буфера виділення.",
+          "renderMath": "Якщо true (типово), формули LaTeX, які виводять програми термінала ($...$, \\(...\\), $$...$$, \\[...\\]), відображаються поверх вихідного тексту в усіх терміналах. Якщо false, вивід термінала залишається звичайним текстом. Перемикайте на льоту сполученням toggleTerminalMathRendering або палітрою команд.",
           "scrollSpeed": "Множник, що застосовується до величини прокручування коліщатком миші та трекпадом у терміналі. Вищі значення прокручують швидше, нижчі — повільніше.",
           "showTextBoxOnNewTerminals": "Типово показує бета-ввід TextBox для новостворених робочих просторів, вкладок термінала й розділень.",
           "focusTextBoxOnNewTerminals": "Типово фокусує бета-ввід TextBox для новостворених робочих просторів, вкладок термінала й розділень. Фокусування також показує TextBox."
@@ -1018,7 +1019,8 @@
         "markdown": {
           "fontSize": "Default body font size, in points, for newly opened markdown viewers. Zoom a viewer live with Cmd-+ / Cmd-- / Cmd-0.",
           "fontFamily": "Default body font family for newly opened markdown viewers. Leave empty for the system markdown font stack.",
-          "maxWidth": "Default maximum reading column width, in CSS pixels, for newly opened markdown viewers."
+          "maxWidth": "Default maximum reading column width, in CSS pixels, for newly opened markdown viewers.",
+          "renderMath": "Якщо true (типово), переглядач Markdown відображає формули LaTeX ($...$, $$...$$, \\(...\\), \\[...\\]) за допомогою KaTeX. Якщо false, формули показуються як вихідний текст. Застосовується одразу до відкритих переглядачів."
         },
         "sidebar": {
           "notificationMessageLineLimit": "Максимальна кількість рядків останнього сповіщення, що відображаються під заголовком кожного робочого простору.",

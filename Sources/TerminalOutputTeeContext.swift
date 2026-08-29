@@ -1,3 +1,4 @@
+import CmuxFoundation
 import CmuxTerminalCore
 import Foundation
 import os
@@ -47,6 +48,15 @@ final class TerminalOutputTeeContext: @unchecked Sendable {
     private let notificationHandler: PromptTurnNotificationHandler
     private var detectors: [DetectorBinding]
     private let forwardQueue = OSAllocatedUnfairLock(initialState: ForwardQueue())
+    /// IO-thread-only pre-check for math delimiters in the raw output.
+    private var mathGate = TerminalMathByteGate()
+    /// The gate revision already handed to the main-actor router.
+    private var forwardedMathRevision: UInt64 = 0
+    /// Edge-triggered "candidate pending" flag shared with the main actor:
+    /// the IO thread sets it once, the router clears it after each grid scan
+    /// (`TerminalMathCandidateRouter.markScanned`), so sustained output with
+    /// math cannot fan out more than one main-actor hop per scan.
+    private let mathCandidateFlag = AtomicBooleanGate(false)
 
     init(
         workspaceID: UUID,
@@ -83,6 +93,33 @@ final class TerminalOutputTeeContext: @unchecked Sendable {
 
             detectors[index].detector.consume(bytes)
             forwardDetectorChangeIfNeeded(at: index, now: now)
+        }
+        consumeMathCandidates(bytes)
+    }
+
+    // MARK: Terminal math
+
+    /// Runs the byte gate and, on a new candidate revision, arms the shared
+    /// flag and hops to the main-actor router at most once per scan.
+    private func consumeMathCandidates(_ bytes: UnsafeBufferPointer<UInt8>) {
+        // Global off-switch (`terminal.renderMath`), read lock-free so a
+        // disabled feature costs one atomic load per chunk.
+        guard TerminalMathCandidateRouter.isEnabledGate.loadAcquire() else { return }
+        mathGate.consume(bytes)
+        guard mathGate.candidateRevision != forwardedMathRevision else { return }
+        forwardedMathRevision = mathGate.candidateRevision
+        forwardMathCandidate()
+    }
+
+    private func forwardMathCandidate() {
+        guard mathCandidateFlag.compareExchange(expected: false, desired: true) else { return }
+        // Capture only Sendable identifiers, never `self`: the lease that
+        // owns this context is released after `ghostty_surface_free`, and a
+        // Task holding `self` would extend the context past that point.
+        let surfaceID = surfaceID
+        let flag = mathCandidateFlag
+        Task { @MainActor in
+            TerminalMathCandidateRouter.shared.noteCandidate(surfaceID: surfaceID, flag: flag)
         }
     }
 

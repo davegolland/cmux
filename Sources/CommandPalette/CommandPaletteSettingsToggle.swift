@@ -253,6 +253,18 @@ enum CommandPaletteSettingsToggleCommands {
                 }
             ),
             CommandPaletteSettingToggleDescriptor(
+                commandId: commandIdPrefix + "markdownRenderMath",
+                settingsKey: "markdown.renderMath",
+                title: {
+                    String(localized: "settings.app.markdownRenderMath", defaultValue: "Markdown Viewer Math")
+                },
+                sectionTitle: app,
+                keywords: ["markdown.renderMath", "markdown", "math", "latex", "katex", "tex", "formula", "equation", "viewer"],
+                defaultValue: MarkdownCatalogSection().renderMath.defaultValue,
+                defaultsKey: MarkdownCatalogSection().renderMath.userDefaultsKey
+                // Open viewers observe UserDefaults.didChangeNotification (MarkdownPanel).
+            ),
+            CommandPaletteSettingToggleDescriptor(
                 commandId: commandIdPrefix + "fileEditorWordWrap",
                 settingsKey: "fileEditor.wordWrap",
                 title: {
@@ -435,6 +447,20 @@ enum CommandPaletteSettingsToggleCommands {
                 defaultsKey: TerminalScrollBarSettings.showScrollBarKey,
                 didSet: { _, _, notificationCenter in
                     TerminalScrollBarSettings.notifyDidChange(notificationCenter: notificationCenter)
+                }
+            ),
+            CommandPaletteSettingToggleDescriptor(
+                commandId: commandIdPrefix + "terminalRenderMath",
+                settingsKey: "terminal.renderMath",
+                title: {
+                    String(localized: "settings.terminal.renderMath", defaultValue: "Render Math in Terminal")
+                },
+                sectionTitle: terminal,
+                keywords: ["terminal.renderMath", "terminal", "math", "latex", "katex", "tex", "formula", "equation", "overlay"],
+                defaultValue: TerminalMathRenderingSettings.defaultIsEnabled,
+                defaultsKey: TerminalMathRenderingSettings.key,
+                didSet: { _, _, notificationCenter in
+                    TerminalMathRenderingSettings.notifyDidChange(notificationCenter: notificationCenter)
                 }
             ),
             CommandPaletteSettingToggleDescriptor(

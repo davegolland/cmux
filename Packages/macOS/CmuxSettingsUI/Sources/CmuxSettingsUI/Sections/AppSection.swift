@@ -9,7 +9,7 @@ import SwiftUI
 /// Keep Workspace Open When Closing Last Surface, Focus Pane on
 /// First Click, File Drops, Open Files With, Open Supported Files in
 /// cmux, Terminal Config link, Open Markdown in cmux Viewer,
-/// Markdown Viewer typography, iMessage Mode, Reorder on Notification, Dock Badge, Menu Bar
+/// Markdown Viewer typography and math, iMessage Mode, Reorder on Notification, Dock Badge, Menu Bar
 /// Only, Show in Menu Bar, Unread Pane Ring, Pane Flash, Desktop
 /// Notifications, Notification Sound, Notification Command, Send
 /// anonymous telemetry, Warn Before Quit, Warn Before Closing Tab /
@@ -40,6 +40,7 @@ public struct AppSection: View {
     @State private var markdownFontSize: DefaultsValueModel<Int>
     @State private var markdownFontFamily: DefaultsValueModel<String>
     @State private var markdownMaxWidth: DefaultsValueModel<Int>
+    @State private var markdownRenderMath: DefaultsValueModel<Bool>
     @State private var canvasPaneGap: DefaultsValueModel<Int>
     @State private var canvasSnapping: DefaultsValueModel<Bool>
     @State private var fileEditorWordWrap: DefaultsValueModel<Bool>
@@ -94,6 +95,7 @@ public struct AppSection: View {
         _markdownFontSize = State(initialValue: DefaultsValueModel(store: defaultsStore, key: catalog.markdown.fontSize))
         _markdownFontFamily = State(initialValue: DefaultsValueModel(store: defaultsStore, key: catalog.markdown.fontFamily))
         _markdownMaxWidth = State(initialValue: DefaultsValueModel(store: defaultsStore, key: catalog.markdown.maxWidth))
+        _markdownRenderMath = State(initialValue: DefaultsValueModel(store: defaultsStore, key: catalog.markdown.renderMath))
         _canvasPaneGap = State(initialValue: DefaultsValueModel(store: defaultsStore, key: catalog.canvas.paneGap))
         _canvasSnapping = State(initialValue: DefaultsValueModel(store: defaultsStore, key: catalog.canvas.snappingEnabled))
         _fileEditorWordWrap = State(initialValue: DefaultsValueModel(store: defaultsStore, key: catalog.fileEditor.wordWrap))
@@ -140,7 +142,7 @@ public struct AppSection: View {
             mainCard
         }
         .task {
-            startSettingsObservation([language, appearance, appIcon, placement, inheritDir, minimalMode, keepWorkspaceOpen, firstClick, focusHistoryIncludesPanesAndTabs, fileDrop, preferredEditor, openSupported, openMarkdown, globalFontMagnification, markdownFontSize, markdownFontFamily, markdownMaxWidth, canvasPaneGap, canvasSnapping, fileEditorWordWrap, iMessage, reorder, dockBadge, menuBarOnly, showInMenuBar, paneRing, paneFlash, desktopNotifications, agentPermissionPrompt, agentTurnComplete, agentIdleReminder, soundName, soundCommand, customSoundFile, telemetry, confirmQuit, warnCloseTab, warnCloseX, hideCloseButton, renameSelects, paletteAllSurfaces])
+            startSettingsObservation([language, appearance, appIcon, placement, inheritDir, minimalMode, keepWorkspaceOpen, firstClick, focusHistoryIncludesPanesAndTabs, fileDrop, preferredEditor, openSupported, openMarkdown, globalFontMagnification, markdownFontSize, markdownFontFamily, markdownMaxWidth, markdownRenderMath, canvasPaneGap, canvasSnapping, fileEditorWordWrap, iMessage, reorder, dockBadge, menuBarOnly, showInMenuBar, paneRing, paneFlash, desktopNotifications, agentPermissionPrompt, agentTurnComplete, agentIdleReminder, soundName, soundCommand, customSoundFile, telemetry, confirmQuit, warnCloseTab, warnCloseX, hideCloseButton, renameSelects, paletteAllSurfaces])
             if languageAtAppear == nil { languageAtAppear = language.current }; if telemetryAtAppear == nil { telemetryAtAppear = telemetry.current }
         }
     }
@@ -444,6 +446,19 @@ public struct AppSection: View {
                 .accessibilityLabel(
                     String(localized: "settings.app.markdownMaxWidth", defaultValue: "Markdown Viewer Max Width")
                 )
+            }
+            SettingsCardDivider()
+
+            // Markdown Viewer Math
+            SettingsCardRow(
+                configurationReview: .json("markdown.renderMath"),
+                String(localized: "settings.app.markdownRenderMath", defaultValue: "Markdown Viewer Math"),
+                subtitle: String(localized: "settings.app.markdownRenderMath.subtitle", defaultValue: "Typeset LaTeX math ($...$, $$...$$, \\(...\\), \\[...\\]) with KaTeX in the markdown viewer. When off, math is shown as source text.")
+            ) {
+                Toggle("", isOn: Binding(get: { markdownRenderMath.current }, set: { markdownRenderMath.set($0) }))
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .accessibilityIdentifier("SettingsAppMarkdownRenderMathToggle")
             }
             SettingsCardDivider()
 

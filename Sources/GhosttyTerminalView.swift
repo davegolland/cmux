@@ -3904,6 +3904,18 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
     private var keyboardCopyModeVisualActive: Bool { keyboardCopyModeSelectionKind != nil }
     private var keyboardCopyModeVisualLineActive: Bool { keyboardCopyModeSelectionKind == .line }
     let keyboardCopyModeCursorOverlayView: NSView = GhosttyFlashOverlayView(frame: .zero)
+    /// Rendered-math overlay; sits below the copy-mode cursor so the cursor stays visible.
+    let terminalMathOverlayView = TerminalMathOverlayView(frame: .zero)
+    /// Created on first use so views that never see a `$` pay nothing; `deinit`
+    /// only invalidates an existing controller.
+    private var terminalMathControllerStorage: TerminalMathSurfaceController?
+    /// Scans rendered frames for LaTeX and paints `terminalMathOverlayView`.
+    var terminalMathController: TerminalMathSurfaceController {
+        if let controller = terminalMathControllerStorage { return controller }
+        let controller = TerminalMathSurfaceController(view: self)
+        terminalMathControllerStorage = controller
+        return controller
+    }
     // internal (not fileprivate): witnesses for TerminalSurfaceNativeViewing
     // must match the conforming class's access level.
     var isKeyboardCopyModeActive: Bool { keyboardCopyModeActive }
@@ -4031,6 +4043,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         wantsLayer = true
         layer?.masksToBounds = true
         setupKeyboardCopyModeCursorOverlay()
+        setupTerminalMathOverlay()
         installEventMonitor()
         updateTrackingAreas()
         registerForDraggedTypes(Array(Self.dropTypes))
@@ -4043,6 +4056,17 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         keyboardCopyModeCursorOverlayView.layer?.borderWidth = 1
         keyboardCopyModeCursorOverlayView.isHidden = true
         addSubview(keyboardCopyModeCursorOverlayView, positioned: .above, relativeTo: nil)
+    }
+
+    private func setupTerminalMathOverlay() {
+        terminalMathOverlayView.frame = bounds
+        terminalMathOverlayView.autoresizingMask = [.width, .height]
+        terminalMathOverlayView.isHidden = true
+        addSubview(
+            terminalMathOverlayView,
+            positioned: .below,
+            relativeTo: keyboardCopyModeCursorOverlayView
+        )
     }
 
     func applySurfaceBackground() {
@@ -4696,6 +4720,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         super.layout()
         updateSurfaceSize()
         syncKeyboardCopyModeCursorOverlay()
+        terminalMathControllerStorage?.viewDidLayout()
         invalidateTextInputCoordinates()
         terminalSurface?.hostedView.scheduleSuppressedFirstResponderFocusReapplyIfReady(
             reason: "becomeFirstResponder.hiddenOrTiny.layout"
@@ -5153,6 +5178,29 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         var performed = true
         for _ in 0 ..< terminalKeyboardCopyModeClampCount(repeatCount) { performed = performBindingAction(action) && performed }
         return performed
+    }
+
+    /// Cell geometry for the math overlay, read through the validated surface
+    /// accessor; nil when the surface is not live or reports no grid.
+    func terminalMathGridMetrics() -> TerminalMathGridMetrics? {
+        guard let surface = terminalSurface?.liveSurfaceForGhosttyAccess(reason: "terminalMathMetrics") else {
+            return nil
+        }
+        var native = ghostty_surface_grid_metrics_s()
+        guard ghostty_surface_grid_metrics(surface, &native),
+              native.cell_width.isFinite,
+              native.cell_width > 0,
+              native.cell_height.isFinite,
+              native.cell_height > 0,
+              native.padding_left.isFinite,
+              native.padding_top.isFinite else { return nil }
+
+        return TerminalMathGridMetrics(
+            cellWidth: CGFloat(native.cell_width),
+            cellHeight: CGFloat(native.cell_height),
+            xInset: CGFloat(native.padding_left),
+            yInset: CGFloat(native.padding_top)
+        )
     }
 
     private func keyboardCopyModeGridMetrics(surface: ghostty_surface_t) -> KeyboardCopyModeGridMetrics? {
@@ -8281,6 +8329,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         discardPendingExplicitKeyDownEvents()
         discardPendingPasteAfterSurfaceReady()
         keyboardCopyModeRenderedFrameDemandRelease?()
+        terminalMathControllerStorage?.invalidate()
         selectionAccessibilitySignal.finish()
         if titleUpdateSurfaceKey != nil {
             titleUpdateIngress.retireCurrentAttachment()

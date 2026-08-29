@@ -105,6 +105,8 @@ public enum ShortcutAction: String, CaseIterable, Sendable, Hashable, SettingCod
     case sendCtrlFToTerminal
     /// Clears the focused terminal's visible screen while preserving scrollback.
     case clearScreenKeepScrollback
+    /// Flips the global `terminal.renderMath` setting from the focused terminal.
+    case toggleTerminalMathRendering
 
     // MARK: Panes
     case focusLeft
@@ -285,7 +287,7 @@ extension ShortcutAction {
             return .key(ShortcutContextKnownKey.commandPaletteVisible.rawValue)
         case .renameTab, .renameWorkspace:
             return .and(.not(.atom(.browserFocus)), .not(.atom(.sidebarFocus)))
-        case .sendCtrlFToTerminal, .clearScreenKeepScrollback:
+        case .sendCtrlFToTerminal, .clearScreenKeepScrollback, .toggleTerminalMathRendering:
             return .and(.not(.atom(.browserFocus)), .not(.atom(.sidebarFocus)))
         case .focusHistoryBack, .focusHistoryForward:
             return .not(.atom(.browserFocus))

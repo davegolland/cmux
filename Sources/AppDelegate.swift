@@ -1439,6 +1439,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         AppearanceSettingsUserDefaultsObserver.shared.startObserving()
         systemAppearanceObserver.startObserving()
         BrowserSystemProxyWatcher.shared.startObserving()
+        TerminalMathRenderingSettings.startObserving()
         if isRunningUnderXCTest {
             NSApp.setActivationPolicy(.regular)
         } else {
@@ -14927,6 +14928,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             )
 #endif
             // Only consume when a focused terminal actually performed the clear.
+            return handled
+        }
+
+        if matchConfiguredShortcut(event: event, action: .toggleTerminalMathRendering) {
+            let routedManager = preferredMainWindowContextForShortcutRouting(event: event)?.tabManager ?? tabManager
+            let handled = routedManager?.toggleFocusedTerminalMathRendering() ?? false
+#if DEBUG
+            cmuxDebugLog(
+                "shortcut.action name=toggleTerminalMathRendering handled=\(handled ? 1 : 0) " +
+                "\(debugShortcutRouteSnapshot(event: event))"
+            )
+#endif
+            // Only consume when a terminal is focused; otherwise let the event continue.
             return handled
         }
 

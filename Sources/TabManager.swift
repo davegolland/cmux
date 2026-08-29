@@ -999,6 +999,19 @@ class TabManager: ObservableObject {
         return cleared
     }
 
+    /// Flips the global `terminal.renderMath` setting on behalf of the focused
+    /// terminal (shortcut and command palette). The setting is app-wide, so
+    /// every terminal follows the change; a per-surface toggle is out of scope.
+    ///
+    /// - Returns: `true` when a terminal panel is focused and the setting was
+    ///   flipped, `false` when no terminal panel is focused.
+    @discardableResult
+    func toggleFocusedTerminalMathRendering() -> Bool {
+        guard selectedTerminalPanel != nil else { return false }
+        TerminalMathRenderingSettings.toggle()
+        return true
+    }
+
     @discardableResult
     func focusFocusedTerminalTextBoxInputOrTerminal() -> Bool {
         guard let panel = selectedTerminalPanel else { return false }

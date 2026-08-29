@@ -99,6 +99,12 @@ extension CmuxSettingsFileStore {
         } else if section.keys.contains("maxWidth") {
             logInvalid("markdown.maxWidth", sourcePath: sourcePath)
         }
+
+        if let value = jsonBool(section["renderMath"]) {
+            snapshot.managedUserDefaults[SettingCatalog().markdown.renderMath.userDefaultsKey] = .bool(value)
+        } else if section.keys.contains("renderMath") {
+            logInvalid("markdown.renderMath", sourcePath: sourcePath)
+        }
     }
 
     func parseMobileSection(

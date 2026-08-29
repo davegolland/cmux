@@ -297,6 +297,12 @@ export const shortcutCategories: ShortcutCategory[] = [
       },
       { id: "toggleTerminalCopyMode", combos: [["⌘", "⇧", "M"]], description: { en: "Toggle terminal copy mode", ja: "ターミナルコピーモードを切り替え" } },
       { id: "clearScreenKeepScrollback", combos: [["⌘", "⇧", "K"]], description: { en: "Clear screen (keep scrollback)", ja: "画面をクリア（スクロールバックを保持）" } },
+      {
+        id: "toggleTerminalMathRendering",
+        combos: [],
+        description: { en: "Toggle math rendering", ja: "数式レンダリングを切り替え" },
+        note: { en: "focused terminal; unbound by default", ja: "フォーカス中のターミナル。既定では未割り当て" },
+      },
       { id: "simulatorHome", combos: [["⌘", "⇧", "H"]], description: { en: "Simulator: Home", ja: "Simulator: ホーム" }, note: { en: "focused Simulator", ja: "フォーカス中のSimulator" } },
       { id: "simulatorRotateLeft", combos: [["⌘", "←"]], description: { en: "Simulator: rotate left", ja: "Simulator: 左に回転" }, note: { en: "focused Simulator", ja: "フォーカス中のSimulator" } },
       { id: "simulatorRotateRight", combos: [["⌘", "→"]], description: { en: "Simulator: rotate right", ja: "Simulator: 右に回転" }, note: { en: "focused Simulator", ja: "フォーカス中のSimulator" } },

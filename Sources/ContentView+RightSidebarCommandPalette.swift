@@ -97,6 +97,8 @@ extension ContentView {
             return .sendCtrlFToTerminal
         case "palette.terminalClearScreenKeepScrollback":
             return .clearScreenKeepScrollback
+        case "palette.terminalToggleMathRendering":
+            return .toggleTerminalMathRendering
         case "palette.toggleSplitZoom":
             return .toggleSplitZoom
         case "palette.equalizeSplits":

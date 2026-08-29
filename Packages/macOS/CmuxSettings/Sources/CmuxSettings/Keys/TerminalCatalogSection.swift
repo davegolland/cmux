@@ -58,6 +58,16 @@ public struct TerminalCatalogSection: SettingCatalogSection {
         userDefaultsKey: "terminal.autoResumeAgentSessions"
     )
 
+    /// Whether LaTeX math (`$...$`, `\(...\)`, `$$...$$`, `\[...\]`) printed
+    /// by a terminal program is typeset as an overlay on top of the raw text.
+    /// Global; toggled from Settings, the command palette, cmux.json, or the
+    /// `toggleTerminalMathRendering` shortcut.
+    public let renderMath = DefaultsKey<Bool>(
+        id: "terminal.renderMath",
+        defaultValue: true,
+        userDefaultsKey: "terminal.renderMath"
+    )
+
     public let agentHibernationEnabled = DefaultsKey<Bool>(
         id: "terminal.agentHibernation.enabled",
         defaultValue: false,

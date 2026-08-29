@@ -21,6 +21,9 @@ struct MarkdownWebRenderer: NSViewRepresentable {
     let fontFamily: String
     /// Maximum content column width, in CSS pixels.
     let maxContentWidth: Double
+    /// Whether the shell typesets LaTeX math (global `markdown.renderMath`).
+    /// Defaulted so existing call sites and tests keep compiling.
+    var mathEnabled: Bool = true
     let session: MarkdownRendererSession
     let onRequestPanelFocus: () -> Void
 
@@ -48,6 +51,7 @@ struct MarkdownWebRenderer: NSViewRepresentable {
             context.coordinator.setFontSize(fontSize)
             context.coordinator.setFontFamily(fontFamily)
             context.coordinator.setMaxContentWidth(maxContentWidth)
+            context.coordinator.setMathEnabled(mathEnabled)
             return webView
         }
 
@@ -93,6 +97,7 @@ struct MarkdownWebRenderer: NSViewRepresentable {
         context.coordinator.setFontSize(fontSize)
         context.coordinator.setFontFamily(fontFamily)
         context.coordinator.setMaxContentWidth(maxContentWidth)
+        context.coordinator.setMathEnabled(mathEnabled)
         context.coordinator.loadShell(theme: theme, initialMarkdown: markdown)
         return webView
     }
@@ -108,6 +113,7 @@ struct MarkdownWebRenderer: NSViewRepresentable {
         context.coordinator.setFontSize(fontSize)
         context.coordinator.setFontFamily(fontFamily)
         context.coordinator.setMaxContentWidth(maxContentWidth)
+        context.coordinator.setMathEnabled(mathEnabled)
         context.coordinator.update(markdown: markdown, theme: theme)
     }
 
@@ -158,6 +164,7 @@ struct MarkdownWebRenderer: NSViewRepresentable {
         private var lastFontFamily: String = ""
         private var lastFontSize: Double = MarkdownFontSizeSettings.defaultPointSize
         private var lastMaxContentWidth: Double = MarkdownMaxWidthSettings.defaultCSSPixels
+        private var lastMathEnabled: Bool = MarkdownMathRenderingSettings.defaultIsEnabled
         private var isLoaded = false
         private var isShellLoading = false
         private var webContentProcessRecoveryAttempts = 0
@@ -258,6 +265,23 @@ struct MarkdownWebRenderer: NSViewRepresentable {
               if (content) { content.style.maxWidth = width + 'px'; }
             })(\(width));
             """
+            webView.evaluateJavaScript(js, completionHandler: nil)
+        }
+
+        /// Records whether the shell typesets math. The shell re-renders the
+        /// current document from its cached source when the flag flips, and
+        /// the flag is page state, so it is re-applied in `didFinish` before
+        /// the markdown replay. SwiftUI pushes the value on every update, so
+        /// only a change reaches the page.
+        func setMathEnabled(_ enabled: Bool) {
+            guard enabled != lastMathEnabled else { return }
+            lastMathEnabled = enabled
+            applyMathEnabled()
+        }
+
+        private func applyMathEnabled() {
+            guard let webView else { return }
+            let js = "window.__cmuxSetMathEnabled && window.__cmuxSetMathEnabled(\(lastMathEnabled ? "true" : "false"));"
             webView.evaluateJavaScript(js, completionHandler: nil)
         }
 
@@ -761,6 +785,7 @@ struct MarkdownWebRenderer: NSViewRepresentable {
             // so it MUST be re-applied after every shell (re)load.
             applyFontFamily()
             applyMaxContentWidth()
+            applyMathEnabled()
             applyTheme(lastTheme ?? pendingTheme)
             // Replay last known markdown after the shell finishes loading.
             // Keep the recovery budget scoped to the current markdown payload:

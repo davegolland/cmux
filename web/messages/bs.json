@@ -1012,6 +1012,7 @@
           "sessionContentMaxWidth": "Opcionalna maksimalna širina, u tačkama, za sadržaj terminala i ugrađenog razgovora s agentom. Postavite false za korištenje pune širine okna.",
           "sessionContentAlignment": "Horizontalni položaj sadržaja terminala i ugrađenog razgovora s agentom kada je sessionContentMaxWidth omogućen.",
           "copyOnSelect": "Kada je true, odabrani tekst terminala kopira se u sistemski međuspremnik kada se odabir potvrdi. Kada je false, cmux ne emitira Ghostty copy-on-select nadjačavanje; Ghostty konfiguracija i zadane vrijednosti kontrolišu ponašanje međuspremnika odabira.",
+          "renderMath": "Kada je true (zadano), LaTeX matematika koju ispisuju terminalski programi ($...$, \\(...\\), $$...$$, \\[...\\]) slaže se kao sloj preko izvornog teksta u svakom terminalu. Kada je false, izlaz terminala ostaje običan tekst. Prebacite uživo prečicom toggleTerminalMathRendering ili komandnom paletom.",
           "scrollSpeed": "Množitelj koji se primjenjuje na pomak točkića miša i dodirne plohe u terminalu. Veće vrijednosti pomiču brže, a manje sporije.",
           "showTextBoxOnNewTerminals": "Podrazumijevano prikazuje beta TextBox unos za novokreirane radne prostore, terminalske tabove i podjele.",
           "focusTextBoxOnNewTerminals": "Podrazumijevano fokusira beta TextBox unos za novokreirane radne prostore, terminalske tabove i podjele. Fokusiranje također prikazuje TextBox."
@@ -1034,7 +1035,8 @@
         "markdown": {
           "fontSize": "Default body font size, in points, for newly opened markdown viewers. Zoom a viewer live with Cmd-+ / Cmd-- / Cmd-0.",
           "fontFamily": "Default body font family for newly opened markdown viewers. Leave empty for the system markdown font stack.",
-          "maxWidth": "Default maximum reading column width, in CSS pixels, for newly opened markdown viewers."
+          "maxWidth": "Default maximum reading column width, in CSS pixels, for newly opened markdown viewers.",
+          "renderMath": "Kada je true (zadano), Markdown preglednik slaže LaTeX matematiku ($...$, $$...$$, \\(...\\), \\[...\\]) pomoću KaTeX-a. Kada je false, matematika se prikazuje kao izvorni tekst. Primjenjuje se odmah na otvorene preglednike."
         },
         "sidebar": {
           "notificationMessageLineLimit": "Maksimalan broj redova prikazanih za najnoviju obavijest ispod naslova svakog radnog prostora.",

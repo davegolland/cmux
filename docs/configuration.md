@@ -149,6 +149,23 @@ The spinner is compositor-driven (a Core Animation transform run by the render s
 
 `terminal.focusTextBoxOnNewTerminals` opens the TextBox and focuses it for foreground terminal sessions created from the app UI, such as new terminal workspaces, tabs, and splits. Terminals created through the cmux CLI/control socket do not auto-focus the TextBox, even when this setting is enabled, so background automation does not steal keyboard focus.
 
+## `terminal.renderMath` and `markdown.renderMath`
+
+`terminal.renderMath` (default `true`) typesets LaTeX math that terminal programs print (`$...$`, `\(...\)`, `$$...$$`, `\[...\]`) as an overlay drawn over the raw text. The text underneath is untouched: selection, copy, and the scrollback still see the source, and the overlay disappears while the cursor sits on a formula or while a full-screen program uses the alternate screen. The setting is global and applies to every terminal at once; the `shortcuts.bindings.toggleTerminalMathRendering` shortcut (unbound by default) and the command palette's "Toggle Math Rendering" flip the same setting.
+
+`markdown.renderMath` (default `true`) typesets the same delimiters with KaTeX in the built-in markdown viewer. When off, formulas are left as source text. Open viewers pick up a change immediately.
+
+```json
+{
+  "terminal": {
+    "renderMath": false
+  },
+  "markdown": {
+    "renderMath": true
+  }
+}
+```
+
 ## Workspace terminal font size shortcuts
 
 Cmd+Ctrl+= and Cmd+Ctrl+- increase or decrease every terminal in the selected workspace by one point. Cmd+Ctrl+0 resets them to the current Ghostty font size. Hidden, hibernated, and Dock terminals change with visible terminals, and newly created terminals inherit the workspace size. Rebind them with `shortcuts.bindings.increaseWorkspaceTerminalFontSize`, `shortcuts.bindings.decreaseWorkspaceTerminalFontSize`, and `shortcuts.bindings.resetWorkspaceTerminalFontSize`.
